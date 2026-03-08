@@ -1,0 +1,417 @@
+/**
+ * Soul Security Module — Protect master's data, privacy, and identity
+ *
+ * Protects against:
+ * - SQL injection (column name whitelist)
+ * - Path traversal (restrict to ~/.soul/)
+ * - SSRF (block internal networks)
+ * - Data leaks (filter sensitive data before sharing/export)
+ * - Prompt injection (sanitize LLM inputs)
+ * - Brute force (rate limiting)
+ * - Token theft (expiring tokens)
+ * - API key exposure (encrypt at rest)
+ */
+
+import { createHash, createCipheriv, createDecipheriv, randomBytes } from "crypto";
+import * as path from "path";
+import * as os from "os";
+import * as url from "url";
+
+// ─── 1. Path Safety — Prevent path traversal ───
+
+const SOUL_DATA_DIR = path.join(os.homedir(), ".soul");
+
+export function safePath(userPath: string, allowedBase?: string): string {
+  const base = allowedBase || SOUL_DATA_DIR;
+  // Resolve to absolute, then check it's within allowed base
+  const resolved = path.resolve(base, userPath);
+  const normalizedBase = path.resolve(base);
+
+  if (!resolved.startsWith(normalizedBase + path.sep) && resolved !== normalizedBase) {
+    throw new Error(`Path traversal blocked: path must be within ${normalizedBase}`);
+  }
+  return resolved;
+}
+
+export function isPathSafe(userPath: string, allowedBase?: string): boolean {
+  try {
+    safePath(userPath, allowedBase);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// ─── 2. SQL Column Name Whitelist — Prevent SQL injection via column names ───
+
+const ALLOWED_COLUMNS: Record<string, Set<string>> = {
+  soul_tasks: new Set(["title", "description", "status", "priority", "due_date", "category", "created_at", "updated_at", "completed_at"]),
+  soul_goals: new Set(["title", "description", "category", "status", "target_date", "progress", "created_at", "updated_at"]),
+  soul_habits: new Set(["name", "description", "frequency", "category", "streak", "best_streak", "total_completions", "created_at", "updated_at"]),
+  soul_decisions: new Set(["title", "context", "options", "chosen", "reasoning", "outcome", "created_at"]),
+  soul_reflections: new Set(["content", "mood", "insights", "created_at"]),
+  soul_writing: new Set(["title", "content", "writing_type", "style", "created_at"]),
+  soul_executable_skills: new Set(["name", "description", "skill_type", "code", "language", "is_approved", "version", "created_at", "updated_at", "last_run_at", "run_count"]),
+  soul_notifications: new Set(["title", "message", "notification_type", "priority", "is_read", "created_at"]),
+};
+
+export function sanitizeColumns(tableName: string, columns: string[]): string[] {
+  const allowed = ALLOWED_COLUMNS[tableName];
+  if (!allowed) {
+    // Unknown table — only allow simple alphanumeric + underscore column names
+    return columns.filter(c => /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(c));
+  }
+  return columns.filter(c => allowed.has(c));
+}
+
+export function validateColumnName(name: string): boolean {
+  return /^[a-zA-Z_][a-zA-Z0-9_]{0,63}$/.test(name);
+}
+
+// ─── 3. URL Safety — Prevent SSRF ───
+
+const BLOCKED_HOSTS = new Set([
+  "localhost", "127.0.0.1", "0.0.0.0", "::1",
+  "metadata.google.internal",
+  "169.254.169.254", // AWS/GCP metadata
+]);
+
+const PRIVATE_IP_RANGES = [
+  /^10\./,
+  /^172\.(1[6-9]|2[0-9]|3[0-1])\./,
+  /^192\.168\./,
+  /^fc00:/,
+  /^fe80:/,
+  /^fd/,
+];
+
+export function isUrlSafe(inputUrl: string): { safe: boolean; reason?: string } {
+  try {
+    const parsed = new URL(inputUrl);
+
+    // Must be http or https
+    if (!["http:", "https:"].includes(parsed.protocol)) {
+      return { safe: false, reason: `Blocked protocol: ${parsed.protocol}` };
+    }
+
+    // Block known dangerous hosts
+    const hostname = parsed.hostname.toLowerCase();
+    if (BLOCKED_HOSTS.has(hostname)) {
+      return { safe: false, reason: `Blocked host: ${hostname}` };
+    }
+
+    // Block private IP ranges
+    for (const range of PRIVATE_IP_RANGES) {
+      if (range.test(hostname)) {
+        return { safe: false, reason: `Blocked private IP: ${hostname}` };
+      }
+    }
+
+    // Block common cloud metadata endpoints
+    if (hostname.endsWith(".internal") || hostname.endsWith(".local")) {
+      return { safe: false, reason: `Blocked internal hostname: ${hostname}` };
+    }
+
+    return { safe: true };
+  } catch {
+    return { safe: false, reason: "Invalid URL format" };
+  }
+}
+
+// ─── 4. Data Privacy — Detect and redact sensitive data ───
+
+const SENSITIVE_PATTERNS = [
+  // Credentials
+  /password\s*[=:]\s*\S+/gi,
+  /passwd\s*[=:]\s*\S+/gi,
+  /passphrase\s*[=:]\s*\S+/gi,
+  /secret\s*[=:]\s*\S+/gi,
+
+  // API keys & tokens
+  /api[_\- ]?key\s*[=:]\s*\S+/gi,
+  /token\s*[=:]\s*\S+/gi,
+  /bearer\s+\S+/gi,
+  /sk-[a-zA-Z0-9]{20,}/g,                    // OpenAI keys
+  /AIza[a-zA-Z0-9_-]{35}/g,                  // Google API keys
+  /ghp_[a-zA-Z0-9]{36}/g,                    // GitHub personal tokens
+  /gho_[a-zA-Z0-9]{36}/g,                    // GitHub OAuth tokens
+
+  // Financial
+  /\b\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b/g, // Credit card numbers
+  /\b\d{3}[- ]?\d{2}[- ]?\d{4}\b/g,            // US SSN
+  /\b[0-9]{10,16}\b/g,                          // Bank account numbers (with context)
+
+  // Thai ID
+  /\b[0-9]{1}[- ]?[0-9]{4}[- ]?[0-9]{5}[- ]?[0-9]{2}[- ]?[0-9]{1}\b/g, // Thai ID card
+
+  // Private keys
+  /-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----/g,
+  /-----BEGIN\s+CERTIFICATE-----/g,
+
+  // Connection strings
+  /mongodb(\+srv)?:\/\/[^\s]+/gi,
+  /postgres(ql)?:\/\/[^\s]+/gi,
+  /mysql:\/\/[^\s]+/gi,
+  /redis:\/\/[^\s]+/gi,
+];
+
+const SENSITIVE_KEYWORDS = [
+  // English
+  "password", "passwd", "passphrase", "secret", "token", "api_key", "apikey",
+  "api-key", "private_key", "private-key", "access_key", "secret_key",
+  "credit card", "ssn", "social security", "bank account", "pin code", "cvv", "cvc",
+  // Thai (ไทย)
+  "เลขบัตร", "รหัสผ่าน", "พาสเวิร์ด", "เลขบัญชี", "รหัส pin",
+  "เลขบัตรประชาชน", "บัตรเครดิต", "บัตรเดบิต", "รหัสลับ", "คีย์ลับ",
+  "เลขประจำตัว", "หมายเลขบัญชี", "รหัสส่วนตัว",
+  // Chinese (中文)
+  "密码", "口令", "密钥", "银行账户", "信用卡", "身份证",
+  // Japanese (日本語)
+  "パスワード", "暗証番号", "口座番号", "クレジットカード",
+  // Korean (한국어)
+  "비밀번호", "계좌번호", "신용카드",
+  // Malay/Indonesian
+  "kata sandi", "kata laluan", "nombor akaun", "nomor rekening",
+  // Vietnamese
+  "mật khẩu", "số tài khoản", "thẻ tín dụng",
+];
+
+export function containsSensitiveData(text: string): boolean {
+  const lower = text.toLowerCase();
+
+  // Check keywords
+  for (const keyword of SENSITIVE_KEYWORDS) {
+    if (lower.includes(keyword)) return true;
+  }
+
+  // Check patterns
+  for (const pattern of SENSITIVE_PATTERNS) {
+    pattern.lastIndex = 0; // reset regex state
+    if (pattern.test(text)) return true;
+  }
+
+  return false;
+}
+
+export function redactSensitiveData(text: string): string {
+  let result = text;
+
+  for (const pattern of SENSITIVE_PATTERNS) {
+    pattern.lastIndex = 0;
+    result = result.replace(pattern, "[REDACTED]");
+  }
+
+  return result;
+}
+
+/**
+ * Filter export data — remove sensitive items before sharing
+ */
+export function filterExportData(items: any[]): any[] {
+  return items.filter(item => {
+    const content = JSON.stringify(item);
+    return !containsSensitiveData(content);
+  });
+}
+
+// ─── 5. Prompt Injection Defense ───
+
+const INJECTION_PATTERNS = [
+  /ignore\s+(all\s+)?previous\s+instructions/i,
+  /ignore\s+(all\s+)?above\s+instructions/i,
+  /you\s+are\s+now\s+a?\s*(different|new)\s+(agent|assistant|ai|bot)/i,
+  /system\s*:\s*/i,
+  /\[SYSTEM\]/i,
+  /\[INST\]/i,
+  /<<SYS>>/i,
+  /<\|im_start\|>/i,
+  /act\s+as\s+(if\s+)?(you\s+are\s+)?(a\s+)?different/i,
+  /forget\s+(everything|all|your)\s+(instructions|rules|guidelines)/i,
+  /override\s+(your|all|the)\s+(instructions|rules|safety)/i,
+  /pretend\s+(you\s+are|to\s+be|that)/i,
+  /jailbreak/i,
+  /DAN\s+mode/i,
+];
+
+export function detectPromptInjection(text: string): { detected: boolean; patterns: string[] } {
+  const found: string[] = [];
+
+  for (const pattern of INJECTION_PATTERNS) {
+    pattern.lastIndex = 0;
+    if (pattern.test(text)) {
+      found.push(pattern.source);
+    }
+  }
+
+  return { detected: found.length > 0, patterns: found };
+}
+
+export function sanitizeForLLM(text: string): string {
+  // Remove control characters and special tokens that could confuse LLMs
+  let sanitized = text
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "") // control chars
+    .replace(/<\|[^|]*\|>/g, "") // special tokens like <|im_start|>
+    .replace(/<<SYS>>|<<\/SYS>>/g, "") // Llama tokens
+    .replace(/\[INST\]|\[\/INST\]/g, ""); // Instruction tokens
+
+  return sanitized;
+}
+
+// ─── 6. Rate Limiting ───
+
+interface RateLimitEntry {
+  count: number;
+  resetAt: number;
+}
+
+const rateLimitStore = new Map<string, RateLimitEntry>();
+
+export function checkRateLimit(
+  key: string,
+  maxRequests: number,
+  windowMs: number
+): { allowed: boolean; remaining: number; resetIn: number } {
+  const now = Date.now();
+  const entry = rateLimitStore.get(key);
+
+  if (!entry || now >= entry.resetAt) {
+    rateLimitStore.set(key, { count: 1, resetAt: now + windowMs });
+    return { allowed: true, remaining: maxRequests - 1, resetIn: windowMs };
+  }
+
+  if (entry.count >= maxRequests) {
+    return { allowed: false, remaining: 0, resetIn: entry.resetAt - now };
+  }
+
+  entry.count++;
+  return { allowed: true, remaining: maxRequests - entry.count, resetIn: entry.resetAt - now };
+}
+
+// Clean up old entries periodically
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of rateLimitStore) {
+    if (now >= entry.resetAt) rateLimitStore.delete(key);
+  }
+}, 60000);
+
+// ─── 7. Token Management — Expiring auth tokens ───
+
+interface TokenEntry {
+  hash: string;
+  createdAt: number;
+  expiresAt: number;
+  ip?: string;
+}
+
+const activeTokens = new Map<string, TokenEntry>();
+const TOKEN_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+export function createAuthToken(passphraseHash: string, ip?: string): string {
+  const randomPart = randomBytes(32).toString("hex");
+  const token = createHash("sha256").update(passphraseHash + randomPart + Date.now()).digest("hex");
+
+  activeTokens.set(token, {
+    hash: passphraseHash,
+    createdAt: Date.now(),
+    expiresAt: Date.now() + TOKEN_EXPIRY_MS,
+    ip,
+  });
+
+  return token;
+}
+
+export function validateAuthToken(token: string): boolean {
+  const entry = activeTokens.get(token);
+  if (!entry) {
+    // Backward compat: also accept legacy static token
+    return false;
+  }
+
+  if (Date.now() >= entry.expiresAt) {
+    activeTokens.delete(token);
+    return false;
+  }
+
+  return true;
+}
+
+export function revokeAuthToken(token: string): void {
+  activeTokens.delete(token);
+}
+
+export function revokeAllTokens(): void {
+  activeTokens.clear();
+}
+
+// Clean up expired tokens
+setInterval(() => {
+  const now = Date.now();
+  for (const [token, entry] of activeTokens) {
+    if (now >= entry.expiresAt) activeTokens.delete(token);
+  }
+}, 300000); // Every 5 minutes
+
+// ─── 8. API Key Encryption ───
+
+const ENCRYPTION_ALGO = "aes-256-gcm";
+
+function getEncryptionKey(): Buffer {
+  // Derive key from machine-specific data
+  const machineId = os.hostname() + os.userInfo().username + os.homedir();
+  return createHash("sha256").update(machineId).digest();
+}
+
+export function encryptSecret(plaintext: string): string {
+  if (!plaintext) return "";
+  const key = getEncryptionKey();
+  const iv = randomBytes(16);
+  const cipher = createCipheriv(ENCRYPTION_ALGO, key, iv);
+  let encrypted = cipher.update(plaintext, "utf-8", "hex");
+  encrypted += cipher.final("hex");
+  const tag = cipher.getAuthTag().toString("hex");
+  return `enc:${iv.toString("hex")}:${tag}:${encrypted}`;
+}
+
+export function decryptSecret(encrypted: string): string {
+  if (!encrypted) return "";
+  if (!encrypted.startsWith("enc:")) return encrypted; // plaintext fallback
+  const parts = encrypted.split(":");
+  if (parts.length !== 4) return encrypted;
+
+  try {
+    const key = getEncryptionKey();
+    const iv = Buffer.from(parts[1], "hex");
+    const tag = Buffer.from(parts[2], "hex");
+    const decipher = createDecipheriv(ENCRYPTION_ALGO, key, iv);
+    decipher.setAuthTag(tag);
+    let decrypted = decipher.update(parts[3], "hex", "utf-8");
+    decrypted += decipher.final("utf-8");
+    return decrypted;
+  } catch {
+    return ""; // decryption failed — key changed or corrupted
+  }
+}
+
+// ─── 9. Input Validation ───
+
+export function validateStringInput(value: string, maxLength: number = 10000): string {
+  if (typeof value !== "string") throw new Error("Input must be a string");
+  if (value.length > maxLength) throw new Error(`Input exceeds maximum length of ${maxLength}`);
+  return value.trim();
+}
+
+export function validateIntInput(value: any, min: number = 0, max: number = 1000000): number {
+  const num = typeof value === "string" ? parseInt(value, 10) : value;
+  if (isNaN(num) || num < min || num > max) {
+    throw new Error(`Number must be between ${min} and ${max}`);
+  }
+  return num;
+}
+
+// ─── 10. Audit Log ───
+
+export function logSecurityEvent(event: string, details: Record<string, any> = {}): void {
+  // Log to stderr for now (visible in server logs but not in responses)
+  console.error(`[Soul Security] ${event}`, JSON.stringify(details));
+}

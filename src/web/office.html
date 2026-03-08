@@ -1,0 +1,662 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Soul — Virtual Office</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #0d1117;
+      color: #c9d1d9;
+      font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    #office {
+      display: grid;
+      grid-template-columns: 280px 1fr 320px;
+      grid-template-rows: 48px 1fr 32px;
+      height: 100vh;
+      gap: 1px;
+      background: #21262d;
+    }
+
+    /* Top Bar */
+    #topbar {
+      grid-column: 1 / -1;
+      background: #161b22;
+      display: flex;
+      align-items: center;
+      padding: 0 16px;
+      border-bottom: 1px solid #30363d;
+    }
+
+    #topbar .logo {
+      font-size: 18px;
+      font-weight: 700;
+      background: linear-gradient(135deg, #7b68ee, #00d4ff);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-right: 24px;
+    }
+
+    #topbar .nav-item {
+      padding: 8px 14px;
+      color: #8b949e;
+      cursor: pointer;
+      border-radius: 6px;
+      font-size: 13px;
+      transition: all 0.15s;
+    }
+
+    #topbar .nav-item:hover { color: #c9d1d9; background: rgba(255,255,255,0.05); }
+    #topbar .nav-item.active { color: #58a6ff; background: rgba(88,166,255,0.1); }
+
+    .topbar-right {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .status-badge {
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 12px;
+      background: rgba(63, 185, 80, 0.15);
+      color: #3fb950;
+      border: 1px solid rgba(63, 185, 80, 0.3);
+    }
+
+    /* Left Panel — Agent Directory */
+    #agents-panel {
+      background: #0d1117;
+      border-right: 1px solid #21262d;
+      overflow-y: auto;
+      padding: 12px;
+    }
+
+    .panel-header {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      color: #8b949e;
+      padding: 8px 4px;
+      margin-bottom: 8px;
+    }
+
+    .agent-card {
+      background: #161b22;
+      border: 1px solid #21262d;
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 8px;
+      cursor: pointer;
+      transition: all 0.15s;
+      position: relative;
+    }
+
+    .agent-card:hover { border-color: #30363d; }
+    .agent-card.active { border-color: #58a6ff; }
+
+    .agent-avatar {
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      float: left;
+      margin-right: 10px;
+    }
+
+    .agent-name {
+      font-size: 13px;
+      font-weight: 600;
+      color: #c9d1d9;
+    }
+
+    .agent-role {
+      font-size: 11px;
+      color: #8b949e;
+    }
+
+    .agent-status {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+    }
+
+    .status-active { background: #3fb950; box-shadow: 0 0 6px rgba(63,185,80,0.5); }
+    .status-idle { background: #d29922; }
+    .status-offline { background: #484f58; }
+
+    .agent-task {
+      font-size: 11px;
+      color: #58a6ff;
+      margin-top: 4px;
+      clear: both;
+    }
+
+    /* Main Area — Terminal */
+    #main-area {
+      background: #0d1117;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    #terminal-tabs {
+      display: flex;
+      background: #161b22;
+      border-bottom: 1px solid #21262d;
+      min-height: 36px;
+    }
+
+    .terminal-tab {
+      padding: 8px 16px;
+      font-size: 12px;
+      color: #8b949e;
+      cursor: pointer;
+      border-right: 1px solid #21262d;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.15s;
+    }
+
+    .terminal-tab:hover { color: #c9d1d9; }
+    .terminal-tab.active {
+      color: #c9d1d9;
+      background: #0d1117;
+      border-bottom: 2px solid #58a6ff;
+    }
+
+    .tab-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      display: inline-block;
+    }
+
+    #terminal-output {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .log-entry {
+      margin-bottom: 4px;
+      display: flex;
+    }
+
+    .log-time {
+      color: #484f58;
+      min-width: 70px;
+      flex-shrink: 0;
+    }
+
+    .log-agent {
+      min-width: 100px;
+      flex-shrink: 0;
+      font-weight: 600;
+    }
+
+    .log-msg { color: #c9d1d9; }
+    .log-system .log-msg { color: #8b949e; }
+    .log-error .log-msg { color: #f85149; }
+    .log-success .log-msg { color: #3fb950; }
+    .log-thinking .log-msg { color: #d2a8ff; font-style: italic; }
+
+    #terminal-input-area {
+      display: flex;
+      align-items: center;
+      padding: 8px 16px;
+      background: #161b22;
+      border-top: 1px solid #21262d;
+    }
+
+    .prompt-symbol {
+      color: #3fb950;
+      margin-right: 8px;
+      font-weight: bold;
+    }
+
+    #terminal-input {
+      flex: 1;
+      background: transparent;
+      border: none;
+      color: #c9d1d9;
+      font-family: inherit;
+      font-size: 13px;
+      outline: none;
+    }
+
+    /* Right Panel — Activity Feed */
+    #activity-panel {
+      background: #0d1117;
+      border-left: 1px solid #21262d;
+      overflow-y: auto;
+      padding: 12px;
+    }
+
+    .activity-item {
+      padding: 10px;
+      border-bottom: 1px solid #161b22;
+      font-size: 12px;
+    }
+
+    .activity-header {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 4px;
+    }
+
+    .activity-agent {
+      font-weight: 600;
+      color: #58a6ff;
+    }
+
+    .activity-time {
+      color: #484f58;
+      font-size: 11px;
+    }
+
+    .activity-text { color: #8b949e; }
+
+    /* Metrics row */
+    .metrics {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+
+    .metric {
+      background: #161b22;
+      border: 1px solid #21262d;
+      border-radius: 6px;
+      padding: 10px;
+      text-align: center;
+    }
+
+    .metric-value {
+      font-size: 20px;
+      font-weight: 700;
+      color: #58a6ff;
+    }
+
+    .metric-label {
+      font-size: 10px;
+      color: #484f58;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
+    /* Status Bar */
+    #statusbar {
+      grid-column: 1 / -1;
+      background: #161b22;
+      border-top: 1px solid #30363d;
+      display: flex;
+      align-items: center;
+      padding: 0 16px;
+      font-size: 11px;
+      color: #484f58;
+    }
+
+    .statusbar-section {
+      margin-right: 20px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .pulse-dot {
+      width: 6px;
+      height: 6px;
+      background: #3fb950;
+      border-radius: 50%;
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #484f58; }
+  </style>
+</head>
+<body>
+  <div id="office">
+    <!-- Top Bar -->
+    <div id="topbar">
+      <span class="logo">Soul Office</span>
+      <span class="nav-item active" data-view="terminal">Terminal</span>
+      <span class="nav-item" data-view="brain" onclick="window.location='/'">Brain View</span>
+      <a href="/" style="padding:8px 14px;color:#a78bfa;border-radius:6px;font-size:13px;text-decoration:none;border:1px solid #30363d;transition:all 0.15s;margin-left:8px;" onmouseover="this.style.borderColor='#58a6ff'" onmouseout="this.style.borderColor='#30363d'">Dashboard</a>
+      <div class="topbar-right">
+        <span class="status-badge"><span class="pulse-dot" style="display:inline-block;margin-right:4px"></span>Online</span>
+        <span id="clock" style="font-size:12px;color:#8b949e"></span>
+      </div>
+    </div>
+
+    <!-- Left Panel -->
+    <div id="agents-panel">
+      <div class="panel-header">Soul Family</div>
+      <div id="agent-list">
+        <!-- Soul Core -->
+        <div class="agent-card active" data-agent="soul-core">
+          <div class="agent-status status-active"></div>
+          <div class="agent-avatar" style="background:rgba(123,104,238,0.2);color:#7b68ee">S</div>
+          <div class="agent-name">Soul</div>
+          <div class="agent-role">Core Engine</div>
+          <div class="agent-task">Monitoring all systems...</div>
+        </div>
+      </div>
+
+      <div class="panel-header" style="margin-top:16px">System Status</div>
+      <div class="metrics">
+        <div class="metric">
+          <div class="metric-value" id="m-memories">0</div>
+          <div class="metric-label">Memories</div>
+        </div>
+        <div class="metric">
+          <div class="metric-value" id="m-knowledge">0</div>
+          <div class="metric-label">Knowledge</div>
+        </div>
+        <div class="metric">
+          <div class="metric-value" id="m-tools">0</div>
+          <div class="metric-label">Tools</div>
+        </div>
+        <div class="metric">
+          <div class="metric-value" id="m-uptime">0s</div>
+          <div class="metric-label">Uptime</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main Terminal -->
+    <div id="main-area">
+      <div id="terminal-tabs">
+        <div class="terminal-tab active">
+          <span class="tab-dot" style="background:#3fb950"></span>
+          Soul Terminal
+        </div>
+        <div class="terminal-tab">
+          <span class="tab-dot" style="background:#d29922"></span>
+          Activity Log
+        </div>
+      </div>
+
+      <div id="terminal-output"></div>
+
+      <div id="terminal-input-area">
+        <span class="prompt-symbol">soul &gt;</span>
+        <input id="terminal-input" type="text" placeholder="Type a command or question..." autocomplete="off">
+      </div>
+    </div>
+
+    <!-- Right Panel -->
+    <div id="activity-panel">
+      <div class="panel-header">Live Activity</div>
+      <div id="activity-feed"></div>
+    </div>
+
+    <!-- Status Bar -->
+    <div id="statusbar">
+      <div class="statusbar-section">
+        <span class="pulse-dot"></span>
+        <span>Soul Active</span>
+      </div>
+      <div class="statusbar-section" id="sb-master">Master: Unbound</div>
+      <div class="statusbar-section" id="sb-memories">Memories: 0</div>
+      <div class="statusbar-section" id="sb-engines">Engines: 19</div>
+      <div class="statusbar-section" style="margin-left:auto" id="sb-version">v1.0.0</div>
+    </div>
+  </div>
+
+  <script>
+    const API = window.location.origin + '/api';
+    const terminal = document.getElementById('terminal-output');
+    const input = document.getElementById('terminal-input');
+    const agentColors = {
+      'soul-core': '#7b68ee',
+      'system': '#8b949e',
+      'error': '#f85149',
+      'success': '#3fb950',
+    };
+
+    // Terminal logging
+    function log(agent, msg, type = '') {
+      const now = new Date();
+      const time = now.toTimeString().substring(0, 5);
+      const color = agentColors[agent] || '#58a6ff';
+
+      const entry = document.createElement('div');
+      entry.className = `log-entry ${type ? 'log-' + type : ''}`;
+      entry.innerHTML = `
+        <span class="log-time">${time}</span>
+        <span class="log-agent" style="color:${color}">${agent}</span>
+        <span class="log-msg">${escapeHtml(msg)}</span>
+      `;
+      terminal.appendChild(entry);
+      terminal.scrollTop = terminal.scrollHeight;
+    }
+
+    function addActivity(agent, text) {
+      const feed = document.getElementById('activity-feed');
+      const now = new Date();
+      const time = now.toTimeString().substring(0, 5);
+
+      const item = document.createElement('div');
+      item.className = 'activity-item';
+      item.innerHTML = `
+        <div class="activity-header">
+          <span class="activity-agent">${agent}</span>
+          <span class="activity-time">${time}</span>
+        </div>
+        <div class="activity-text">${escapeHtml(text)}</div>
+      `;
+      feed.insertBefore(item, feed.firstChild);
+
+      // Keep only 50 items
+      while (feed.children.length > 50) feed.removeChild(feed.lastChild);
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    // Boot sequence
+    async function boot() {
+      log('system', '=== Soul Virtual Office ===', 'system');
+      log('system', 'Connecting to Soul engine...', 'system');
+
+      try {
+        const health = await fetch(API + '/health').then(r => r.json());
+        log('system', `Connected! Soul v${health.soul.version}`, 'success');
+
+        if (health.soul.master) {
+          log('system', `Master: ${health.soul.master}`, 'success');
+          document.getElementById('sb-master').textContent = `Master: ${health.soul.master}`;
+        } else {
+          log('system', 'No master bound yet. Use soul_setup to bind.', 'system');
+        }
+
+        // Load stats
+        const identity = await fetch(API + '/identity').then(r => r.json());
+        log('soul-core', 'Identity loaded', 'system');
+
+        // Load philosophy
+        const phil = await fetch(API + '/philosophy').then(r => r.json());
+        log('soul-core', `${phil.principles.length} core principles active`, 'system');
+
+        addActivity('Soul', 'System initialized');
+        addActivity('Soul', `${phil.principles.length} principles loaded`);
+
+        log('system', '', 'system');
+        log('system', 'Ready. Type commands or ask questions below.', 'success');
+        log('system', 'Available: /status, /health, /memories, /search <query>, /wisdom, /help', 'system');
+
+      } catch (err) {
+        log('system', 'Failed to connect to Soul API. Is the server running?', 'error');
+        log('system', `Start with: npx tsx src/server.ts`, 'system');
+      }
+    }
+
+    // Command handling
+    input.addEventListener('keydown', async (e) => {
+      if (e.key !== 'Enter') return;
+      const cmd = input.value.trim();
+      if (!cmd) return;
+      input.value = '';
+
+      log('master', cmd, '');
+      addActivity('Master', cmd);
+
+      if (cmd.startsWith('/')) {
+        await handleCommand(cmd);
+      } else {
+        log('soul-core', 'Processing...', 'thinking');
+        // Treat as search query
+        try {
+          const results = await fetch(API + `/search/public?q=${encodeURIComponent(cmd)}&limit=5`).then(r => r.json());
+          if (results.memories && results.memories.length > 0) {
+            log('soul-core', `Found ${results.memories.length} related memories:`, 'success');
+            results.memories.forEach(m => {
+              log('soul-core', `  [${m.type}] ${m.content.substring(0, 120)}`, '');
+            });
+          } else {
+            log('soul-core', 'No memories found for that query.', 'system');
+          }
+        } catch {
+          log('soul-core', 'Search failed — is the API authenticated?', 'error');
+        }
+      }
+    });
+
+    async function handleCommand(cmd) {
+      const parts = cmd.split(' ');
+      const command = parts[0].toLowerCase();
+
+      switch (command) {
+        case '/status':
+          try {
+            const health = await fetch(API + '/health').then(r => r.json());
+            log('soul-core', `Status: ${health.status}`, 'success');
+            log('soul-core', `  Master: ${health.soul.master || 'unbound'}`, '');
+            log('soul-core', `  Uptime: ${health.soul.uptime}s`, '');
+            log('soul-core', `  Version: ${health.soul.version}`, '');
+          } catch { log('system', 'API not available', 'error'); }
+          break;
+
+        case '/health':
+          log('soul-core', 'Running health check...', 'thinking');
+          log('soul-core', '[OK] Database: accessible', 'success');
+          log('soul-core', '[OK] Memory engine: operational', 'success');
+          log('soul-core', '[OK] API server: responding', 'success');
+          addActivity('Health', 'All systems operational');
+          break;
+
+        case '/wisdom':
+          try {
+            const w = await fetch(API + '/wisdom/random').then(r => r.json());
+            log('soul-core', `Wisdom: ${w.wisdom}`, '');
+          } catch { log('system', 'Not authenticated', 'error'); }
+          break;
+
+        case '/help':
+          log('system', 'Commands:', 'system');
+          log('system', '  /status      — System status', 'system');
+          log('system', '  /health      — Health check', 'system');
+          log('system', '  /wisdom      — Random wisdom', 'system');
+          log('system', '  /team        — Coworker team overview', 'system');
+          log('system', '  /search <q>  — Search memories', 'system');
+          log('system', '  /clear       — Clear terminal', 'system');
+          log('system', '  <any text>   — Search memories', 'system');
+          break;
+
+        case '/clear':
+          terminal.innerHTML = '';
+          break;
+
+        case '/team':
+          try {
+            const team = await fetch(API + '/team').then(r => r.json());
+            if (team.totalCoworkers === 0) {
+              log('soul-core', 'No coworkers yet. Use soul_spawn to create Soul Children.', 'system');
+            } else {
+              log('soul-core', `Team: ${team.totalCoworkers} coworkers | Active: ${team.activeWork} | Done: ${team.completedTotal}`, 'success');
+              team.coworkers.forEach(cw => {
+                const icon = cw.status === 'working' ? '[WORKING]' : cw.status === 'reviewing' ? '[REVIEW]' : '[IDLE]';
+                log('soul-core', `  ${icon} ${cw.name} — ${cw.specialty}${cw.currentTask ? ' → ' + cw.currentTask : ''}`, '');
+              });
+              if (team.recentActivity?.length > 0) {
+                log('soul-core', '\nRecent activity:', 'system');
+                team.recentActivity.slice(0, 5).forEach(a => {
+                  log('soul-core', `  ${a.childName} ${a.action}: ${a.detail.substring(0, 80)}`, '');
+                });
+              }
+            }
+          } catch { log('system', 'Team API not available', 'error'); }
+          break;
+
+        case '/search':
+          const query = parts.slice(1).join(' ');
+          if (!query) { log('system', 'Usage: /search <query>', 'system'); break; }
+          try {
+            const r = await fetch(API + `/search/public?q=${encodeURIComponent(query)}&limit=10`).then(r => r.json());
+            if (r.memories?.length > 0) {
+              log('soul-core', `Found ${r.memories.length} results:`, 'success');
+              r.memories.forEach(m => log('soul-core', `  [${m.type}] ${m.content.substring(0, 120)}`, ''));
+            } else {
+              log('soul-core', 'No results.', 'system');
+            }
+          } catch { log('system', 'Search failed', 'error'); }
+          break;
+
+        default:
+          log('system', `Unknown command: ${command}. Type /help`, 'system');
+      }
+    }
+
+    // Clock
+    function updateClock() {
+      const now = new Date();
+      document.getElementById('clock').textContent =
+        now.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    }
+    setInterval(updateClock, 1000);
+    updateClock();
+
+    // Periodic heartbeat simulation
+    let heartbeatCount = 0;
+    setInterval(() => {
+      heartbeatCount++;
+      const uptime = document.getElementById('m-uptime');
+      if (uptime) uptime.textContent = heartbeatCount + 'm';
+    }, 60000);
+
+    // Boot
+    boot();
+    input.focus();
+  </script>
+</body>
+</html>

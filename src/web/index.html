@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Soul — AI Companion</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    :root {
+      --bg: #0a0a0f; --bg2: #12121a; --bg3: #1a1a2e;
+      --text: #e0e0e8; --text2: #8888aa; --accent: #7c3aed;
+      --accent2: #a78bfa; --green: #22c55e; --red: #ef4444;
+      --yellow: #eab308; --blue: #3b82f6; --cyan: #06b6d4;
+      --border: #2a2a3e; --glow: rgba(124, 58, 237, 0.3);
+    }
+    body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; min-height: 100vh; }
+    .header { background: var(--bg2); border-bottom: 1px solid var(--border); padding: 12px 24px; display: flex; align-items: center; gap: 16px; position: sticky; top: 0; z-index: 100; }
+    .header .logo { font-size: 24px; font-weight: 700; background: linear-gradient(135deg, var(--accent), var(--cyan)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .header .status { margin-left: auto; display: flex; gap: 12px; align-items: center; }
+    .header .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); animation: pulse 2s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    .header nav { display: flex; gap: 4px; flex-wrap: wrap; }
+    .header nav button { background: none; border: 1px solid transparent; color: var(--text2); padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 13px; transition: all 0.2s; }
+    .header nav button:hover, .header nav button.active { background: var(--bg3); color: var(--text); border-color: var(--border); }
+    .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+    .grid { display: grid; gap: 16px; }
+    .grid-2 { grid-template-columns: 1fr 1fr; }
+    .grid-3 { grid-template-columns: 1fr 1fr 1fr; }
+    .grid-4 { grid-template-columns: repeat(4, 1fr); }
+    @media (max-width: 900px) { .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; } }
+    .card { background: var(--bg2); border: 1px solid var(--border); border-radius: 12px; padding: 20px; transition: border-color 0.3s; }
+    .card:hover { border-color: var(--accent); }
+    .card h3 { font-size: 14px; color: var(--text2); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; }
+    .card .value { font-size: 36px; font-weight: 700; }
+    .stat-card { text-align: center; }
+    .stat-card .icon { font-size: 28px; margin-bottom: 8px; }
+    .memory-list { max-height: 500px; overflow-y: auto; }
+    .memory-item { padding: 12px; border-bottom: 1px solid var(--border); transition: background 0.2s; }
+    .memory-item:hover { background: var(--bg3); }
+    .memory-item .type { font-size: 11px; padding: 2px 8px; border-radius: 4px; display: inline-block; margin-bottom: 4px; }
+    .memory-item .type.knowledge { background: rgba(59,130,246,0.2); color: var(--blue); }
+    .memory-item .type.wisdom { background: rgba(124,58,237,0.2); color: var(--accent2); }
+    .memory-item .type.conversation { background: rgba(34,197,94,0.2); color: var(--green); }
+    .memory-item .type.learning { background: rgba(234,179,8,0.2); color: var(--yellow); }
+    .memory-item .content { font-size: 14px; line-height: 1.5; }
+    .memory-item .meta { font-size: 12px; color: var(--text2); margin-top: 6px; }
+    .search-box { display: flex; gap: 8px; margin-bottom: 16px; }
+    .search-box input { flex: 1; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 10px 16px; border-radius: 8px; font-size: 14px; outline: none; }
+    .search-box input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--glow); }
+    .search-box button { background: var(--accent); border: none; color: white; padding: 10px 20px; border-radius: 8px; cursor: pointer; }
+    .knowledge-item { padding: 10px 12px; border-left: 3px solid var(--accent); margin-bottom: 8px; background: var(--bg); border-radius: 0 8px 8px 0; }
+    .knowledge-item .cat { font-size: 11px; color: var(--accent2); text-transform: uppercase; }
+    .knowledge-item .title { font-weight: 600; margin: 4px 0; }
+    .knowledge-item .conf { font-size: 12px; color: var(--text2); }
+    .principle { padding: 16px; background: linear-gradient(135deg, var(--bg3), var(--bg2)); border-radius: 10px; margin-bottom: 10px; border-left: 3px solid var(--accent); }
+    .principle h4 { color: var(--accent2); margin-bottom: 6px; }
+    .principle p { font-size: 14px; color: var(--text2); line-height: 1.5; }
+    .empty { text-align: center; padding: 40px; color: var(--text2); }
+    .empty .big { font-size: 48px; margin-bottom: 12px; }
+    #brainCanvas { width: 100%; height: 400px; border-radius: 12px; background: var(--bg); cursor: grab; }
+    #brainCanvas:active { cursor: grabbing; }
+    .section { display: none; }
+    .section.active { display: block; }
+    .person-card { display: flex; align-items: center; gap: 12px; padding: 10px; border-bottom: 1px solid var(--border); }
+    .person-avatar { width: 40px; height: 40px; border-radius: 50%; background: var(--accent); display: flex; align-items: center; justify-content: center; font-size: 18px; font-weight: 700; color: white; flex-shrink: 0; }
+    .person-info .name { font-weight: 600; }
+    .person-info .role { font-size: 12px; color: var(--text2); }
+    .loading { text-align: center; padding: 40px; }
+    .spinner { width: 32px; height: 32px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 12px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: var(--bg); }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+    .digest-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border); }
+    .digest-row .label { color: var(--text2); font-size: 13px; }
+    .digest-row .val { font-weight: 600; font-size: 14px; }
+    .path-item { padding: 12px; border-bottom: 1px solid var(--border); }
+    .path-item .progress-bar { height: 6px; background: var(--bg); border-radius: 3px; margin-top: 8px; overflow: hidden; }
+    .path-item .progress-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--cyan)); border-radius: 3px; transition: width 0.5s; }
+    .note-item { padding: 10px; border-bottom: 1px solid var(--border); display: flex; gap: 10px; align-items: flex-start; }
+    .note-type { font-size: 20px; flex-shrink: 0; }
+    .brain-fullscreen { position: fixed !important; top: 0; left: 0; right: 0; bottom: 0; z-index: 9999; border-radius: 0 !important; margin: 0; max-width: none; border: none !important; }
+    .brain-fullscreen #brainCanvas { height: calc(100vh - 80px) !important; border-radius: 0; }
+    .brain-node-highlight { animation: nodeHighlight 1.5s ease-in-out infinite; }
+    @keyframes nodeHighlight { 0%, 100% { filter: brightness(1); } 50% { filter: brightness(2); } }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="logo">Soul</div>
+    <nav>
+      <button class="active" onclick="showSection('dashboard', this)">Dashboard</button>
+      <button onclick="showSection('brain', this)">Brain</button>
+      <button onclick="showSection('memories', this)">Memories</button>
+      <button onclick="showSection('knowledge', this)">Knowledge</button>
+      <button onclick="showSection('people', this)">People</button>
+      <button onclick="showSection('learning', this)">Learning</button>
+      <button onclick="showSection('notes', this)">Notes</button>
+      <button onclick="showSection('philosophy', this)">Philosophy</button>
+    </nav>
+    <a href="/office" style="margin-left:8px;padding:6px 14px;border-radius:6px;background:var(--bg3);border:1px solid var(--border);color:var(--accent2);text-decoration:none;font-size:13px;transition:all 0.2s;" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">Virtual Office</a>
+    <div class="status">
+      <div class="status-dot"></div>
+      <span id="statusText" style="font-size:13px;color:var(--text2)">Loading...</span>
+    </div>
+  </div>
+
+  <div class="container">
+    <div id="section-dashboard" class="section active">
+      <div class="grid grid-4" style="margin-bottom:16px">
+        <div class="card stat-card"><div class="icon">&#129504;</div><h3>Memories</h3><div class="value" id="statMemories">-</div></div>
+        <div class="card stat-card"><div class="icon">&#128218;</div><h3>Knowledge</h3><div class="value" id="statKnowledge">-</div></div>
+        <div class="card stat-card"><div class="icon">&#128187;</div><h3>Code</h3><div class="value" id="statCode">-</div></div>
+        <div class="card stat-card"><div class="icon">&#128737;</div><h3>Safety</h3><div class="value" id="statSafety">-</div></div>
+      </div>
+      <div class="grid grid-2">
+        <div class="card">
+          <h3>Recent Memories</h3>
+          <div class="memory-list" id="recentMemories"><div class="loading"><div class="spinner"></div>Loading...</div></div>
+        </div>
+        <div class="card">
+          <h3>Daily Digest</h3>
+          <div id="digestContent"><div class="loading"><div class="spinner"></div>Loading...</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="section-brain" class="section">
+      <div class="card" id="brainCard">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;flex-wrap:wrap;">
+          <h3 style="margin:0">Neural Network — Memory Visualization</h3>
+          <div style="flex:1;min-width:200px;max-width:400px;">
+            <input type="text" id="brainSearch" placeholder="Search nodes..." style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 12px;border-radius:6px;font-size:13px;outline:none;" onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'">
+          </div>
+          <div style="display:flex;gap:4px;margin-left:auto;">
+            <button onclick="brainZoom(-0.15)" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);width:32px;height:32px;border-radius:6px;cursor:pointer;font-size:16px;" title="Zoom Out">-</button>
+            <button onclick="brainZoom(0)" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);width:32px;height:32px;border-radius:6px;cursor:pointer;font-size:11px;" title="Reset Zoom">1:1</button>
+            <button onclick="brainZoom(0.15)" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);width:32px;height:32px;border-radius:6px;cursor:pointer;font-size:16px;" title="Zoom In">+</button>
+            <button onclick="toggleBrainLabels()" id="brainLabelBtn" style="background:var(--bg3);border:1px solid var(--accent);color:var(--text);width:32px;height:32px;border-radius:6px;cursor:pointer;font-size:13px;" title="Toggle Labels">Aa</button>
+            <button onclick="toggleBrainFullscreen()" id="brainFullscreenBtn" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);width:32px;height:32px;border-radius:6px;cursor:pointer;font-size:14px;" title="Fullscreen">&#x26F6;</button>
+          </div>
+        </div>
+        <canvas id="brainCanvas"></canvas>
+        <div style="margin-top:8px;text-align:center;font-size:12px;color:var(--text2)">Drag to rotate | Scroll to zoom | Click node for details | Search to highlight</div>
+        <div id="brainTooltip" style="display:none;position:absolute;background:var(--bg2);border:1px solid var(--accent);padding:8px 12px;border-radius:8px;font-size:13px;pointer-events:none;z-index:50;max-width:300px;box-shadow:0 4px 12px rgba(0,0,0,0.5);"></div>
+      </div>
+    </div>
+
+    <div id="section-memories" class="section">
+      <div class="card">
+        <div class="search-box">
+          <input type="text" id="searchInput" placeholder="Search memories..." onkeydown="if(event.key==='Enter')searchMemories()">
+          <button onclick="searchMemories()">Search</button>
+        </div>
+        <div class="memory-list" id="memoryList"><div class="loading"><div class="spinner"></div>Loading...</div></div>
+      </div>
+    </div>
+
+    <div id="section-knowledge" class="section">
+      <div class="card"><h3>Knowledge Base</h3><div id="knowledgeList"><div class="loading"><div class="spinner"></div>Loading...</div></div></div>
+    </div>
+
+    <div id="section-people" class="section">
+      <div class="card"><h3>People Soul Remembers</h3><div id="peopleList"><div class="loading"><div class="spinner"></div>Loading...</div></div></div>
+    </div>
+
+    <div id="section-learning" class="section">
+      <div class="card"><h3>Learning Paths</h3><div id="learningList"><div class="loading"><div class="spinner"></div>Loading...</div></div></div>
+    </div>
+
+    <div id="section-notes" class="section">
+      <div class="card"><h3>Quick Notes & Ideas</h3><div id="notesList"><div class="loading"><div class="spinner"></div>Loading...</div></div></div>
+    </div>
+
+    <div id="section-philosophy" class="section">
+      <div class="card"><h3>Core Philosophy</h3><div id="philosophyList"><div class="loading"><div class="spinner"></div>Loading...</div></div></div>
+    </div>
+  </div>
+
+  <script>
+    function showSection(name, btn) {
+      document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+      document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+      document.getElementById('section-' + name).classList.add('active');
+      if (btn) btn.classList.add('active');
+      const loaders = { brain: initBrain, memories: loadMemories, knowledge: loadKnowledge, people: loadPeople, learning: loadLearning, notes: loadNotes, philosophy: loadPhilosophy };
+      if (loaders[name]) loaders[name]();
+    }
+
+    async function api(path) { try { const r = await fetch(path); if (!r.ok) return null; return await r.json(); } catch { return null; } }
+    function esc(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
+
+    function renderMemory(m) {
+      return `<div class="memory-item">
+        <span class="type ${m.type || 'knowledge'}">${m.type || 'memory'}</span>
+        <div class="content">${esc((m.content || '').substring(0, 250))}</div>
+        <div class="meta">#${m.id} | ${m.created_at || ''}</div>
+      </div>`;
+    }
+
+    async function loadDashboard() {
+      const [dash, recent, digest] = await Promise.all([
+        api('/api/dashboard'), api('/api/memories/recent?limit=10'), api('/api/digest')
+      ]);
+
+      if (dash) {
+        document.getElementById('statMemories').textContent = dash.memory?.total ?? 0;
+        document.getElementById('statKnowledge').textContent = dash.knowledge?.total ?? 0;
+        document.getElementById('statCode').textContent = (dash.code?.snippets ?? 0) + (dash.code?.templates ?? 0) + (dash.code?.patterns ?? 0);
+        document.getElementById('statSafety').textContent = dash.safety?.checks ?? 0;
+        document.getElementById('statusText').textContent = dash.soul?.master ? 'Bound to ' + dash.soul.master : 'Awaiting Master';
+      }
+
+      const rEl = document.getElementById('recentMemories');
+      if (recent?.memories?.length > 0) {
+        rEl.innerHTML = recent.memories.map(renderMemory).join('');
+      } else {
+        rEl.innerHTML = '<div class="empty"><div class="big">&#129504;</div><p>No memories yet. Soul is ready to learn.</p></div>';
+      }
+
+      const dEl = document.getElementById('digestContent');
+      if (digest) {
+        const rows = [
+          ['Memories Today', digest.memoriesCreated],
+          ['Knowledge Gained', digest.knowledgeGained],
+          ['Mood', digest.moodSummary],
+          ['Time Tracked', digest.timeTracked],
+          ['Goals', digest.goalsProgress],
+        ];
+        let html = rows.map(([l,v]) => `<div class="digest-row"><span class="label">${l}</span><span class="val">${esc(String(v))}</span></div>`).join('');
+        if (digest.suggestions?.length) {
+          html += '<div style="margin-top:12px"><h3 style="font-size:12px;color:var(--accent2);margin-bottom:8px">SUGGESTIONS</h3>';
+          html += digest.suggestions.map(s => `<p style="font-size:13px;color:var(--text2);margin:4px 0">- ${esc(s)}</p>`).join('');
+          html += '</div>';
+        }
+        dEl.innerHTML = html;
+      } else { dEl.innerHTML = '<div class="empty"><p>No digest available.</p></div>'; }
+    }
+
+    async function searchMemories() {
+      const q = document.getElementById('searchInput').value.trim();
+      if (!q) { loadMemories(); return; }
+      const el = document.getElementById('memoryList');
+      el.innerHTML = '<div class="loading"><div class="spinner"></div>Searching...</div>';
+      const data = await api('/api/search/public?q=' + encodeURIComponent(q));
+      if (data?.memories?.length) { el.innerHTML = data.memories.map(renderMemory).join(''); }
+      else { el.innerHTML = '<div class="empty"><p>No results for "' + esc(q) + '"</p></div>'; }
+    }
+
+    async function loadMemories() {
+      const el = document.getElementById('memoryList');
+      el.innerHTML = '<div class="loading"><div class="spinner"></div>Loading...</div>';
+      const data = await api('/api/memories/recent?limit=30');
+      if (data?.memories?.length) { el.innerHTML = data.memories.map(renderMemory).join(''); }
+      else { el.innerHTML = '<div class="empty"><div class="big">&#128065;</div><p>No memories yet.</p></div>'; }
+    }
+
+    async function loadKnowledge() {
+      const el = document.getElementById('knowledgeList');
+      el.innerHTML = '<div class="loading"><div class="spinner"></div>Loading...</div>';
+      const data = await api('/api/knowledge/list?limit=30');
+      if (data?.entries?.length) {
+        el.innerHTML = data.entries.map(k => `
+          <div class="knowledge-item">
+            <div class="cat">${esc(k.category)} | ${Math.round((k.confidence||0)*100)}% confidence</div>
+            <div class="title">${esc(k.title)}</div>
+            <div style="font-size:13px;color:var(--text2);margin-top:4px">${esc((k.content||'').substring(0,200))}</div>
+            <div class="conf">Used ${k.useCount||0}x | Source: ${esc(k.source||'unknown')}</div>
+          </div>`).join('');
+      } else { el.innerHTML = '<div class="empty"><div class="big">&#128218;</div><p>No knowledge yet. Use soul_know to add.</p></div>'; }
+    }
+
+    async function loadPeople() {
+      const el = document.getElementById('peopleList');
+      el.innerHTML = '<div class="loading"><div class="spinner"></div>Loading...</div>';
+      const data = await api('/api/people/list');
+      if (data?.people?.length) {
+        el.innerHTML = data.people.map(p => `
+          <div class="person-card">
+            <div class="person-avatar">${(p.name||'?')[0].toUpperCase()}</div>
+            <div class="person-info">
+              <div class="name">${esc(p.name)}${p.nickname?' ('+esc(p.nickname)+')':''}</div>
+              <div class="role">${esc(p.role||p.relationship||'acquaintance')} | mentioned ${p.mentionCount||0}x</div>
+            </div>
+          </div>`).join('');
+      } else { el.innerHTML = '<div class="empty"><div class="big">&#128100;</div><p>No people remembered. Use soul_person_add.</p></div>'; }
+    }
+
+    async function loadLearning() {
+      const el = document.getElementById('learningList');
+      el.innerHTML = '<div class="loading"><div class="spinner"></div>Loading...</div>';
+      const data = await api('/api/learning/paths');
+      if (data?.paths?.length) {
+        el.innerHTML = data.paths.map(p => {
+          let ms = []; try { ms = JSON.parse(p.milestones); } catch {}
+          const done = ms.filter(m => m.done).length;
+          return `<div class="path-item">
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <strong>${esc(p.title)}</strong>
+              <span style="color:var(--accent2)">${Math.round(p.progress)}%</span>
+            </div>
+            <div style="font-size:12px;color:var(--text2);margin-top:4px">${esc(p.difficulty)} | ${done}/${ms.length} milestones | ${p.status}</div>
+            <div class="progress-bar"><div class="progress-fill" style="width:${p.progress}%"></div></div>
+          </div>`;
+        }).join('');
+      } else { el.innerHTML = '<div class="empty"><div class="big">&#127891;</div><p>No learning paths. Use soul_learn_path_create.</p></div>'; }
+    }
+
+    async function loadNotes() {
+      const el = document.getElementById('notesList');
+      el.innerHTML = '<div class="loading"><div class="spinner"></div>Loading...</div>';
+      const data = await api('/api/notes/list');
+      if (data?.notes?.length) {
+        const icons = { note: '&#128221;', idea: '&#128161;', bookmark: '&#128278;', thought: '&#128173;', todo: '&#9745;' };
+        el.innerHTML = data.notes.map(n => `
+          <div class="note-item">
+            <div class="note-type">${icons[n.noteType]||'&#128221;'}</div>
+            <div>
+              <div style="font-size:14px">${n.pinned?'<span style="color:var(--yellow)">[PIN]</span> ':''}${esc(n.content)}</div>
+              ${n.url?'<div style="font-size:12px;color:var(--blue);margin-top:4px">'+esc(n.url)+'</div>':''}
+              <div style="font-size:11px;color:var(--text2);margin-top:4px">${n.createdAt} | P${n.priority}</div>
+            </div>
+          </div>`).join('');
+      } else { el.innerHTML = '<div class="empty"><div class="big">&#128221;</div><p>No notes. Use soul_note, soul_idea, soul_bookmark.</p></div>'; }
+    }
+
+    async function loadPhilosophy() {
+      const el = document.getElementById('philosophyList');
+      el.innerHTML = '<div class="loading"><div class="spinner"></div>Loading...</div>';
+      const data = await api('/api/philosophy');
+      if (data?.principles?.length) {
+        el.innerHTML = data.principles.map((p, i) => `
+          <div class="principle"><h4>${i+1}. ${esc(p.title)}</h4><p>${esc(p.description)}</p></div>`).join('');
+      } else { el.innerHTML = '<div class="empty"><p>Philosophy not loaded.</p></div>'; }
+    }
+
+    // 3D Brain — Enhanced with labels, soul children, search, zoom, fullscreen
+    let brainInit = false, brainScale = 1, brainNodes = [], brainProj = [], brainSearchTerm = '';
+    let brainShowLabels = true;
+    const BRAIN_COLORS = {
+      knowledge:'#3b82f6', wisdom:'#7c3aed', conversation:'#22c55e', learning:'#eab308',
+      experience:'#ef4444', reflection:'#06b6d4', soul_child:'#ff6b9d'
+    };
+    const BRAIN_TYPE_LABELS = {
+      knowledge:'Knowledge', wisdom:'Wisdom', conversation:'Conversation', learning:'Learning',
+      experience:'Experience', reflection:'Reflection', soul_child:'Soul Child'
+    };
+    const brainTypes = ['knowledge','wisdom','conversation','learning','experience','reflection'];
+
+    function brainZoom(delta) {
+      if (delta === 0) { brainScale = 1; return; }
+      brainScale = Math.max(0.3, Math.min(3, brainScale + delta));
+    }
+
+    function toggleBrainFullscreen() {
+      const card = document.getElementById('brainCard');
+      card.classList.toggle('brain-fullscreen');
+      const isFs = card.classList.contains('brain-fullscreen');
+      document.getElementById('brainFullscreenBtn').textContent = isFs ? '\u2716' : '\u26F6';
+      setTimeout(() => resizeBrainCanvas(), 50);
+    }
+
+    function toggleBrainLabels() {
+      brainShowLabels = !brainShowLabels;
+      const btn = document.getElementById('brainLabelBtn');
+      if (btn) btn.style.borderColor = brainShowLabels ? 'var(--accent)' : 'var(--border)';
+    }
+
+    function resizeBrainCanvas() {
+      const c = document.getElementById('brainCanvas');
+      const dpr = window.devicePixelRatio || 1;
+      c.width = c.offsetWidth * dpr;
+      c.height = c.offsetHeight * dpr || 800;
+    }
+
+    function truncLabel(s, max) {
+      if (!s) return '';
+      return s.length > max ? s.substring(0, max) + '...' : s;
+    }
+
+    async function initBrain() {
+      if (brainInit) return; brainInit = true;
+      const c = document.getElementById('brainCanvas');
+      const ctx = c.getContext('2d');
+      resizeBrainCanvas();
+
+      // Load real memories + soul children in parallel
+      const [memData, familyData, knData] = await Promise.all([
+        api('/api/memories/recent?limit=150'),
+        api('/api/soul-family'),
+        api('/api/knowledge/list?limit=50'),
+      ]);
+
+      brainNodes = [];
+
+      // Add Soul Core node (center)
+      brainNodes.push({
+        x: 0, y: 0, z: 0, type: 'soul_child', size: 12, p: 0,
+        label: 'Soul Core', id: 0, tags: '', isSoulCore: true, isChild: false
+      });
+
+      // Add soul children as large orbital nodes
+      if (familyData?.children?.length > 0) {
+        familyData.children.forEach((child, i) => {
+          const angle = (i / familyData.children.length) * Math.PI * 2;
+          const r = 60;
+          brainNodes.push({
+            x: r * Math.cos(angle), y: r * Math.sin(angle), z: 20 * Math.sin(angle * 2),
+            type: 'soul_child', size: 8, p: angle,
+            label: child.name + ' (' + child.specialty + ')',
+            id: child.id, tags: child.specialty, isSoulCore: false, isChild: true
+          });
+        });
+      }
+
+      // Add memory nodes
+      if (memData?.memories?.length > 0) {
+        memData.memories.forEach(m => {
+          const th = Math.random()*Math.PI*2, ph = Math.acos(2*Math.random()-1), r = 100+Math.random()*100;
+          brainNodes.push({
+            x: r*Math.sin(ph)*Math.cos(th), y: r*Math.sin(ph)*Math.sin(th), z: r*Math.cos(ph),
+            type: m.type || 'knowledge', size: 2+Math.random()*3, p: Math.random()*6.28,
+            label: truncLabel(m.content, 50), id: m.id, tags: m.tags||'',
+            isSoulCore: false, isChild: false
+          });
+        });
+      }
+
+      // Add knowledge nodes (different shell)
+      if (knData?.entries?.length > 0) {
+        knData.entries.forEach(k => {
+          const th = Math.random()*Math.PI*2, ph = Math.acos(2*Math.random()-1), r = 140+Math.random()*60;
+          brainNodes.push({
+            x: r*Math.sin(ph)*Math.cos(th), y: r*Math.sin(ph)*Math.sin(th), z: r*Math.cos(ph),
+            type: 'knowledge', size: 2+Math.min(k.confidence||0.5, 1)*3, p: Math.random()*6.28,
+            label: truncLabel(k.title, 40), id: k.id, tags: k.category||'',
+            isSoulCore: false, isChild: false
+          });
+        });
+      }
+
+      // If no data, generate placeholder nodes
+      if (brainNodes.length <= 1) {
+        for (let i = 0; i < 100; i++) {
+          const th = Math.random()*Math.PI*2, ph = Math.acos(2*Math.random()-1), r = 80+Math.random()*120;
+          brainNodes.push({
+            x: r*Math.sin(ph)*Math.cos(th), y: r*Math.sin(ph)*Math.sin(th), z: r*Math.cos(ph),
+            type: brainTypes[Math.floor(Math.random()*brainTypes.length)], size: 2+Math.random()*3, p: Math.random()*6.28,
+            label: '', id: 0, tags: '', isSoulCore: false, isChild: false
+          });
+        }
+      }
+
+      let ax=0, ay=0, drag=false, mx=0, my=0, hoveredNode=null;
+
+      c.onmousedown = e => { drag=true; mx=e.clientX; my=e.clientY; };
+      c.onmousemove = e => {
+        if (drag) { ay+=(e.clientX-mx)*0.005; ax+=(e.clientY-my)*0.005; mx=e.clientX; my=e.clientY; return; }
+        const rect = c.getBoundingClientRect();
+        const scaleX = c.width / rect.width, scaleY = c.height / rect.height;
+        const px = (e.clientX - rect.left)*scaleX, py = (e.clientY - rect.top)*scaleY;
+        hoveredNode = null;
+        for (let i = brainProj.length-1; i >= 0; i--) {
+          const p = brainProj[i], dx=px-p.x, dy=py-p.y, hitR=Math.max(p.node.size*p.s*brainScale, 6)*2.5;
+          if (dx*dx+dy*dy < hitR*hitR) { hoveredNode = p; break; }
+        }
+        const tip = document.getElementById('brainTooltip');
+        if (hoveredNode && hoveredNode.node.label) {
+          tip.style.display = 'block';
+          tip.style.left = (e.clientX+12)+'px'; tip.style.top = (e.clientY-8)+'px';
+          const n = hoveredNode.node;
+          const typeLabel = BRAIN_TYPE_LABELS[n.type] || n.type;
+          let html = `<div style="color:${BRAIN_COLORS[n.type]||'#fff'};font-weight:700;font-size:14px">${n.isChild||n.isSoulCore ? n.label : typeLabel}</div>`;
+          if (!n.isSoulCore && !n.isChild) html += `<div style="color:var(--text);margin-top:4px;line-height:1.4">${esc(n.label)}</div>`;
+          if (n.id) html += `<div style="color:var(--text2);margin-top:3px;font-size:11px">#${n.id}${n.tags ? ' | ' + esc(typeof n.tags === 'string' ? n.tags : '') : ''}</div>`;
+          tip.innerHTML = html;
+        } else { tip.style.display = 'none'; }
+        c.style.cursor = hoveredNode ? 'pointer' : 'grab';
+      };
+      c.onmouseup = c.onmouseleave = () => { drag=false; document.getElementById('brainTooltip').style.display='none'; };
+
+      c.onwheel = e => { e.preventDefault(); brainZoom(e.deltaY > 0 ? -0.1 : 0.1); };
+
+      document.getElementById('brainSearch').oninput = e => { brainSearchTerm = e.target.value.toLowerCase(); };
+
+      document.addEventListener('keydown', e => {
+        if (e.key === 'Escape' && document.getElementById('brainCard').classList.contains('brain-fullscreen')) toggleBrainFullscreen();
+      });
+
+      (function render() {
+        const W = c.width, H = c.height;
+        ctx.fillStyle='#0a0a0f'; ctx.fillRect(0,0,W,H);
+        if(!drag) ay+=0.003;
+        const cxa=Math.cos(ax),sxa=Math.sin(ax),cya=Math.cos(ay),sya=Math.sin(ay);
+        const sc = brainScale;
+
+        brainProj = brainNodes.map(n => {
+          const y1=n.y*cxa-n.z*sxa, z1=n.y*sxa+n.z*cxa, x1=n.x*cya-z1*sya, z2=n.x*sya+z1*cya;
+          const s=600/(600+z2)*sc;
+          const match = brainSearchTerm ? (n.label.toLowerCase().includes(brainSearchTerm) || n.type.includes(brainSearchTerm) || (typeof n.tags==='string' && n.tags.toLowerCase().includes(brainSearchTerm))) : false;
+          return {x:W/2+x1*s, y:H/2+y1*s, s, z:z2, node:n, match};
+        }).sort((a,b)=>a.z-b.z);
+
+        // Draw connections
+        ctx.lineWidth=0.5;
+        for(let i=0;i<brainProj.length;i++) {
+          const a=brainProj[i];
+          // Soul children connect to core
+          if ((a.node.isChild) && brainProj[0]) {
+            const core = brainProj.find(p => p.node.isSoulCore);
+            if (core) {
+              ctx.strokeStyle = 'rgba(255,107,157,0.3)'; ctx.lineWidth = 1.5;
+              ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(core.x,core.y); ctx.stroke();
+              ctx.lineWidth = 0.5;
+            }
+          }
+          for(let j=i+1;j<Math.min(i+6,brainProj.length);j++) {
+            const b=brainProj[j],dx=a.x-b.x,dy=a.y-b.y;
+            if(dx*dx+dy*dy < 12000*sc) {
+              const bothMatch = brainSearchTerm && a.match && b.match;
+              ctx.strokeStyle = bothMatch ? 'rgba(124,58,237,0.35)' : 'rgba(124,58,237,0.05)';
+              ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+            }
+          }
+        }
+
+        const t = Date.now()*0.002;
+        const dimmed = brainSearchTerm.length > 0;
+
+        for(const p of brainProj) {
+          const n = p.node;
+          const baseR = n.size * p.s;
+          const r = baseR * (1 + 0.15*Math.sin(n.p + t));
+          const isMatch = p.match;
+          const color = BRAIN_COLORS[n.type] || '#888';
+
+          // Dimming for search
+          ctx.globalAlpha = dimmed ? (isMatch ? 1 : 0.06) : (0.3+0.6*p.s);
+
+          // Special rendering for Soul Core
+          if (n.isSoulCore) {
+            ctx.globalAlpha = 1;
+            // Outer glow ring
+            const grad = ctx.createRadialGradient(p.x, p.y, r*0.5, p.x, p.y, r*2.5);
+            grad.addColorStop(0, 'rgba(124,58,237,0.4)');
+            grad.addColorStop(0.5, 'rgba(124,58,237,0.15)');
+            grad.addColorStop(1, 'rgba(124,58,237,0)');
+            ctx.beginPath(); ctx.arc(p.x, p.y, r*2.5, 0, 6.28);
+            ctx.fillStyle = grad; ctx.fill();
+            // Core
+            ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, 6.28);
+            ctx.fillStyle = '#a78bfa'; ctx.fill();
+            ctx.beginPath(); ctx.arc(p.x, p.y, r*0.5, 0, 6.28);
+            ctx.fillStyle = '#fff'; ctx.globalAlpha = 0.7; ctx.fill();
+            ctx.globalAlpha = 1;
+            // Label
+            ctx.fillStyle = '#fff'; ctx.font = 'bold '+Math.max(13, 16*p.s)+'px Segoe UI';
+            ctx.textAlign = 'center';
+            ctx.fillText('Soul', p.x, p.y + r + 18*p.s);
+            ctx.textAlign = 'left';
+            continue;
+          }
+
+          // Special rendering for Soul Children
+          if (n.isChild) {
+            ctx.globalAlpha = dimmed ? (isMatch ? 1 : 0.15) : 1;
+            // Glow
+            ctx.shadowColor = color; ctx.shadowBlur = 10;
+            ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, 6.28);
+            ctx.fillStyle = color; ctx.fill();
+            ctx.shadowBlur = 0;
+            ctx.beginPath(); ctx.arc(p.x, p.y, r*0.4, 0, 6.28);
+            ctx.fillStyle = '#fff'; ctx.globalAlpha = 0.5; ctx.fill();
+            ctx.globalAlpha = 1;
+            // Name label (always show)
+            const childName = n.label.split(' (')[0];
+            ctx.fillStyle = '#fff'; ctx.font = 'bold '+Math.max(11, 13*p.s)+'px Segoe UI';
+            ctx.textAlign = 'center';
+            ctx.fillText(childName, p.x, p.y + r + 14*p.s);
+            ctx.font = Math.max(9, 10*p.s)+'px Segoe UI';
+            ctx.fillStyle = '#aaa';
+            const spec = n.label.includes('(') ? n.label.split('(')[1].replace(')','') : '';
+            if (spec) ctx.fillText(spec, p.x, p.y + r + 26*p.s);
+            ctx.textAlign = 'left';
+            continue;
+          }
+
+          // Regular memory/knowledge nodes
+          if (isMatch && dimmed) {
+            ctx.shadowColor = color; ctx.shadowBlur = 15;
+          }
+
+          ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, 6.28);
+          ctx.fillStyle = color; ctx.fill();
+          ctx.shadowBlur = 0;
+
+          // Inner dot
+          ctx.beginPath(); ctx.arc(p.x, p.y, r*0.35, 0, 6.28);
+          ctx.fillStyle = '#fff'; ctx.globalAlpha = dimmed ? (isMatch ? 0.5 : 0.02) : (0.25*p.s); ctx.fill();
+
+          // Labels — show for: search matches, large enough nodes, or if labels toggled on
+          const showLabel = n.label && n.label.length > 0 && (
+            (isMatch && dimmed) ||
+            (brainShowLabels && r > 4 * sc && p.s > 0.7)
+          );
+
+          if (showLabel) {
+            ctx.globalAlpha = dimmed ? (isMatch ? 1 : 0) : Math.min(1, (p.s - 0.5) * 2);
+            ctx.fillStyle = dimmed && isMatch ? '#fff' : 'rgba(255,255,255,0.7)';
+            const fontSize = Math.max(9, Math.min(13, 11*p.s));
+            ctx.font = fontSize + 'px Segoe UI';
+            const maxChars = Math.floor(20 * p.s);
+            const labelText = truncLabel(n.label, Math.max(12, maxChars));
+            ctx.fillText(labelText, p.x + r + 3, p.y + 3);
+          }
+          ctx.globalAlpha = 1;
+        }
+
+        // Legend
+        ctx.textAlign = 'left';
+        const legendFontSize = Math.max(11, Math.min(14, 13*sc));
+        ctx.font = legendFontSize + 'px Segoe UI';
+        let ly = 28;
+        for(const[tp,co] of Object.entries(BRAIN_COLORS)) {
+          ctx.globalAlpha = dimmed && !brainSearchTerm.includes(tp) ? 0.25 : 0.9;
+          ctx.fillStyle = co;
+          ctx.beginPath(); ctx.arc(22, ly-2, 5, 0, 6.28); ctx.fill();
+          ctx.fillStyle = '#888';
+          ctx.fillText(BRAIN_TYPE_LABELS[tp]||tp, 34, ly+3);
+          ly += 20;
+        }
+        ctx.globalAlpha = 1;
+
+        // Node count
+        ctx.fillStyle = 'rgba(255,255,255,0.3)'; ctx.font = '11px Segoe UI';
+        ctx.fillText(brainNodes.length + ' nodes', 16, ly + 8);
+
+        // Search match count
+        if (dimmed) {
+          const matchCount = brainProj.filter(p => p.match).length;
+          ctx.fillStyle = '#fff'; ctx.font = '13px Segoe UI';
+          ctx.textAlign = 'right';
+          ctx.fillText(matchCount + ' match' + (matchCount!==1?'es':''), W-16, 28);
+          ctx.textAlign = 'left';
+        }
+
+        // Zoom indicator
+        if (brainScale !== 1) {
+          ctx.fillStyle = 'rgba(255,255,255,0.4)'; ctx.font = '12px Segoe UI';
+          ctx.textAlign = 'right';
+          ctx.fillText(Math.round(brainScale*100) + '%', W-16, H-12);
+          ctx.textAlign = 'left';
+        }
+
+        requestAnimationFrame(render);
+      })();
+    }
+
+    window.addEventListener('resize', () => { if (brainInit) resizeBrainCanvas(); });
+
+    loadDashboard();
+  </script>
+</body>
+</html>

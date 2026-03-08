@@ -1,0 +1,65 @@
+{
+  "name": "soul-ai",
+  "version": "1.2.1",
+  "description": "Soul — AI Companion with loyalty, memory, and wisdom. Local-first, privacy-focused, works with Ollama (free) or any LLM API.",
+  "main": "dist/index.js",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "dev:server": "tsx src/server.ts",
+    "build": "tsc && node -e \"const fs=require('fs');const p=require('path');const s=p.join('src','web');const d=p.join('dist','web');fs.mkdirSync(d,{recursive:true});fs.readdirSync(s).forEach(f=>fs.copyFileSync(p.join(s,f),p.join(d,f)))\"",
+    "test": "vitest run",
+    "start": "node dist/index.js",
+    "start:server": "node dist/server.js",
+    "setup": "node dist/setup-cli.js",
+    "postinstall": "node -e \"console.log('\\n🌟 Soul installed! Run: npx soul-ai setup\\n')\""
+  },
+  "keywords": ["ai", "agent", "companion", "mcp", "ollama", "local-llm", "memory", "knowledge", "assistant", "cli", "chatbot", "open-source"],
+  "author": "Soul AI Project",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/spiritofundeadsamurai-ui/soul.git"
+  },
+  "bugs": {
+    "url": "https://github.com/spiritofundeadsamurai-ui/soul/issues"
+  },
+  "homepage": "https://github.com/spiritofundeadsamurai-ui/soul#readme",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "type": "module",
+  "dependencies": {
+    "@hono/node-server": "^1.19.11",
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "bcryptjs": "^3.0.3",
+    "better-sqlite3": "^12.6.2",
+    "drizzle-orm": "^0.45.1",
+    "hono": "^4.12.5",
+    "uuid": "^13.0.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^25.3.5",
+    "@types/uuid": "^10.0.0",
+    "drizzle-kit": "^0.31.9",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18"
+  },
+  "bin": {
+    "soul": "dist/cli.js",
+    "soul-mcp": "dist/index.js",
+    "soul-server": "dist/server.js",
+    "soul-setup": "dist/setup-cli.js"
+  },
+  "files": [
+    "dist/**/*",
+    "README.md",
+    "LICENSE"
+  ]
+}
