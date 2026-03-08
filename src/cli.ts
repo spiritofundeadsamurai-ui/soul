@@ -56,6 +56,33 @@ let debounceBuffer: string[] = [];
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 const DEBOUNCE_MS = 1500; // 1.5s — if user types multiple lines quickly, merge them
 
+// ─── Command Definitions ───
+
+const COMMANDS = [
+  { cmd: "/new",      desc: "Start a new conversation",        alias: [] },
+  { cmd: "/history",  desc: "Show conversation history",       alias: ["/hist"] },
+  { cmd: "/sessions", desc: "List past sessions",              alias: ["/sess"] },
+  { cmd: "/status",   desc: "Soul's status",                   alias: [] },
+  { cmd: "/memory",   desc: "Memory statistics",               alias: ["/mem"] },
+  { cmd: "/model",    desc: "Current LLM info",                alias: [] },
+  { cmd: "/clear",    desc: "Clear screen",                    alias: ["/cls"] },
+  { cmd: "/help",     desc: "Show all commands",               alias: ["/h"] },
+  { cmd: "/exit",     desc: "Exit (session saved)",            alias: ["/quit", "/q"] },
+];
+
+function showCommandSuggestions(filter?: string) {
+  const filtered = filter
+    ? COMMANDS.filter(c => c.cmd.includes(filter) || c.desc.toLowerCase().includes(filter))
+    : COMMANDS;
+
+  console.log("");
+  for (const c of filtered) {
+    const aliases = c.alias.length > 0 ? `${C.dim} (${c.alias.join(", ")})${C.reset}` : "";
+    console.log(`  ${C.cyan}${c.cmd.padEnd(12)}${C.reset}${c.desc}${aliases}`);
+  }
+  console.log(`\n${C.dim}  Tab to autocomplete | Type command and Enter${C.reset}`);
+}
+
 function soulSay(msg: string) {
   console.log(`\n${C.magenta}${C.bold}Soul${C.reset}${C.dim} ›${C.reset} ${msg}`);
 }
@@ -158,11 +185,21 @@ async function main() {
 
   console.log(`${C.dim}Session: ${sessionId.split("-")[0]}${resumed ? " (resumed)" : ""} | Model: ${modelName} | /help for commands${C.reset}\n`);
 
+  // ─── Tab Completer ───
+  function completer(line: string): [string[], string] {
+    if (!line.startsWith("/")) return [[], line];
+    const lower = line.toLowerCase();
+    const allCmds = COMMANDS.flatMap(c => [c.cmd, ...c.alias]);
+    const hits = allCmds.filter(c => c.startsWith(lower));
+    return [hits.length ? hits : allCmds, line];
+  }
+
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
     prompt: `${C.cyan}${masterName}${C.reset}${C.dim} ›${C.reset} `,
     historySize: 200,
+    completer,
   });
 
   rl.prompt();
@@ -207,6 +244,29 @@ async function main() {
     if (input.startsWith("/")) {
       // Clear any pending debounce first
       if (debounceTimer) { clearTimeout(debounceTimer); flushDebounce(); }
+
+      // Just "/" alone → show command suggestions
+      if (input === "/") {
+        showCommandSuggestions();
+        rl.prompt();
+        return;
+      }
+
+      // Partial match suggestion — e.g. "/me" → show /memory
+      if (!COMMANDS.some(c => c.cmd === input.toLowerCase() || c.alias.includes(input.toLowerCase()))) {
+        const partial = input.toLowerCase();
+        const matches = COMMANDS.filter(c =>
+          c.cmd.startsWith(partial) || c.alias.some(a => a.startsWith(partial))
+        );
+        if (matches.length > 0 && matches.length <= 5) {
+          console.log(`${C.dim}  Did you mean:${C.reset}`);
+          for (const m of matches) {
+            console.log(`  ${C.cyan}${m.cmd}${C.reset} ${C.dim}— ${m.desc}${C.reset}`);
+          }
+          rl.prompt();
+          return;
+        }
+      }
 
       const result = handleCommand(input, sessionId, rl);
       if (result === "exit") {
@@ -312,21 +372,16 @@ function handleCommand(input: string, sessionId: string, rl: readline.Interface)
     case "/help":
     case "/h":
       console.log(`\n${C.bold}Commands:${C.reset}`);
-      console.log(`  ${C.cyan}/new${C.reset}       — Start a new conversation`);
-      console.log(`  ${C.cyan}/history${C.reset}   — Show conversation history`);
-      console.log(`  ${C.cyan}/sessions${C.reset}  — List past sessions`);
-      console.log(`  ${C.cyan}/status${C.reset}    — Soul's status`);
-      console.log(`  ${C.cyan}/memory${C.reset}    — Memory stats`);
-      console.log(`  ${C.cyan}/model${C.reset}     — Current model info`);
-      console.log(`  ${C.cyan}/clear${C.reset}     — Clear screen`);
-      console.log(`  ${C.cyan}/exit${C.reset}      — Exit (session saved for next time)`);
+      showCommandSuggestions();
       console.log(`\n${C.dim}Just type naturally — Soul remembers the conversation.${C.reset}`);
+      console.log(`${C.dim}Type ${C.cyan}/${C.reset}${C.dim} to see commands | ${C.cyan}Tab${C.reset}${C.dim} to autocomplete${C.reset}`);
       break;
 
     case "/new":
       return "new_session";
 
-    case "/history": {
+    case "/history":
+    case "/hist": {
       const history = getConversationHistory(sessionId, 20);
       if (history.length === 0) {
         console.log(`${C.dim}  No conversation yet in this session.${C.reset}`);
@@ -341,7 +396,8 @@ function handleCommand(input: string, sessionId: string, rl: readline.Interface)
       break;
     }
 
-    case "/sessions": {
+    case "/sessions":
+    case "/sess": {
       const sessions = listSessions(10);
       if (sessions.length === 0) {
         console.log(`${C.dim}  No sessions yet.${C.reset}`);
@@ -366,6 +422,7 @@ function handleCommand(input: string, sessionId: string, rl: readline.Interface)
       break;
 
     case "/memory":
+    case "/mem":
       import("./memory/memory-engine.js").then(async (m) => {
         const stats = await m.getMemoryStats();
         console.log(`\n${C.bold}Memory:${C.reset} ${stats.total} total`);
@@ -388,6 +445,7 @@ function handleCommand(input: string, sessionId: string, rl: readline.Interface)
     }
 
     case "/clear":
+    case "/cls":
       process.stdout.write("\x1b[2J\x1b[H");
       break;
 
