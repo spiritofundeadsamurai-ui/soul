@@ -1,0 +1,28 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"D:/Programer Project/soul/dist/soul-learn.js\" --stdin --json",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"D:/Programer Project/soul/dist/soul-learn.js\" --stdin --json",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -55,7 +55,9 @@
     "soul": "dist/cli.js",
     "soul-mcp": "dist/index.js",
     "soul-server": "dist/server.js",
-    "soul-setup": "dist/setup-cli.js"
+    "soul-setup": "dist/setup-cli.js",
+    "soul-learn": "dist/soul-learn.js",
+    "soul-bridge": "dist/soul-bridge.js"
   },
   "files": [
     "dist/**/*",
