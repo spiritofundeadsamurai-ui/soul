@@ -25,6 +25,7 @@ import {
   getConversationHistory,
   listSessions,
   extractSessionInsights,
+  type ProgressEvent,
 } from "./core/agent-loop.js";
 import { getDefaultConfig, listConfiguredProviders, addProvider } from "./core/llm-connector.js";
 
@@ -83,16 +84,61 @@ function showCommandSuggestions(filter?: string) {
   console.log(`\n${C.dim}  Tab to autocomplete | Type command and Enter${C.reset}`);
 }
 
+// ─── Display Helpers ───
+
+const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+let spinnerInterval: ReturnType<typeof setInterval> | null = null;
+let spinnerFrame = 0;
+
+function startSpinner(msg: string) {
+  stopSpinner();
+  spinnerFrame = 0;
+  process.stdout.write(`\n${C.dim}  ${SPINNER_FRAMES[0]} ${msg}${C.reset}`);
+  spinnerInterval = setInterval(() => {
+    spinnerFrame = (spinnerFrame + 1) % SPINNER_FRAMES.length;
+    process.stdout.write(`\r${C.dim}  ${SPINNER_FRAMES[spinnerFrame]} ${msg}${C.reset}`);
+  }, 80);
+}
+
+function updateSpinner(msg: string) {
+  if (spinnerInterval) {
+    process.stdout.write(`\r\x1b[K${C.dim}  ${SPINNER_FRAMES[spinnerFrame]} ${msg}${C.reset}`);
+  }
+}
+
+function stopSpinner() {
+  if (spinnerInterval) {
+    clearInterval(spinnerInterval);
+    spinnerInterval = null;
+    process.stdout.write("\r\x1b[K");
+  }
+}
+
+function showToolStart(tool: string, args: Record<string, any>) {
+  stopSpinner();
+  // Show tool name with a brief preview of args
+  const argPreview = Object.entries(args)
+    .slice(0, 2)
+    .map(([k, v]) => {
+      const val = typeof v === "string" ? v.substring(0, 50) : JSON.stringify(v).substring(0, 50);
+      return `${k}=${val}`;
+    })
+    .join(", ");
+  console.log(`${C.dim}  ┌ ${C.yellow}${tool}${C.reset}${C.dim}${argPreview ? ` (${argPreview})` : ""}${C.reset}`);
+}
+
+function showToolEnd(tool: string, result: string, durationMs: number) {
+  const elapsed = durationMs < 1000 ? `${durationMs}ms` : `${(durationMs / 1000).toFixed(1)}s`;
+  const preview = result.replace(/\n/g, " ").substring(0, 80);
+  console.log(`${C.dim}  └ ${C.green}done${C.reset}${C.dim} (${elapsed}) ${preview}${result.length > 80 ? "..." : ""}${C.reset}`);
+}
+
+function showToolError(tool: string, error: string) {
+  console.log(`${C.dim}  └ ${C.red}error${C.reset}${C.dim}: ${error.substring(0, 100)}${C.reset}`);
+}
+
 function soulSay(msg: string) {
   console.log(`\n${C.magenta}${C.bold}Soul${C.reset}${C.dim} ›${C.reset} ${msg}`);
-}
-
-function soulThink(msg: string) {
-  process.stdout.write(`${C.dim}  ${msg}${C.reset}`);
-}
-
-function clearThink() {
-  process.stdout.write("\r\x1b[K");
 }
 
 // ─── Session Management ───
@@ -322,29 +368,65 @@ async function main() {
 
 async function handleMessage(input: string, sessionId: string) {
   saveConversationTurn(sessionId, "user", input);
-  soulThink("thinking...");
 
   const startTime = Date.now();
+  startSpinner("thinking...");
 
   try {
-    // Load conversation history (agent-loop handles smart windowing)
     const history = getConversationHistory(sessionId, 30);
 
     const result = await runAgentLoop(input, {
       history,
       maxIterations: 10,
+      onProgress: (event) => {
+        switch (event.type) {
+          case "thinking":
+            if (event.iteration === 1) {
+              updateSpinner("thinking...");
+            } else {
+              updateSpinner(`thinking... (iteration ${event.iteration})`);
+            }
+            break;
+          case "tool_start":
+            showToolStart(event.tool, event.args);
+            startSpinner(`running ${event.tool}...`);
+            break;
+          case "tool_end":
+            stopSpinner();
+            showToolEnd(event.tool, event.result, event.durationMs);
+            break;
+          case "tool_error":
+            stopSpinner();
+            showToolError(event.tool, event.error);
+            break;
+          case "responding":
+            updateSpinner("composing response...");
+            break;
+          case "cache_hit":
+            stopSpinner();
+            console.log(`${C.dim}  ${C.green}cache hit${C.reset}`);
+            break;
+          case "knowledge_hit":
+            stopSpinner();
+            console.log(`${C.dim}  ${C.green}knowledge found${C.reset}${C.dim} (${event.source})${C.reset}`);
+            break;
+        }
+      },
     });
 
-    clearThink();
+    stopSpinner();
     soulSay(result.reply);
 
-    // Show metadata
+    // Show metadata footer
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     const meta: string[] = [];
-    if (result.cached) meta.push("cached");
-    else if (result.knowledgeHit) meta.push("knowledge");
-    else meta.push(`${result.model}`);
-    if (result.toolsUsed.length > 0) meta.push(`tools: ${[...new Set(result.toolsUsed)].join(", ")}`);
+    if (result.cached) meta.push(`${C.green}cached${C.reset}${C.dim}`);
+    else if (result.knowledgeHit) meta.push(`${C.green}knowledge${C.reset}${C.dim}`);
+    else meta.push(result.model);
+    if (result.toolsUsed.length > 0) {
+      const unique = [...new Set(result.toolsUsed)];
+      meta.push(`${unique.length} tool${unique.length > 1 ? "s" : ""}`);
+    }
     meta.push(`${elapsed}s`);
     if (result.totalTokens > 0) meta.push(`${result.totalTokens} tok`);
     meta.push(`turn ${Math.ceil((getConversationHistory(sessionId, 100).length) / 2)}`);
@@ -354,7 +436,7 @@ async function handleMessage(input: string, sessionId: string) {
     saveConversationTurn(sessionId, "assistant", result.reply);
 
   } catch (err: any) {
-    clearThink();
+    stopSpinner();
     console.log(`\n${C.red}Error: ${err.message}${C.reset}`);
     if (err.message.includes("ECONNREFUSED") || err.message.includes("fetch failed")) {
       console.log(`${C.yellow}Is Ollama running? Start it with: ${C.cyan}ollama serve${C.reset}`);

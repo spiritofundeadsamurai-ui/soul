@@ -174,6 +174,15 @@ export interface AgentResult {
   tokensSaved?: number;
 }
 
+export type ProgressEvent =
+  | { type: "thinking"; iteration: number }
+  | { type: "tool_start"; tool: string; args: Record<string, any> }
+  | { type: "tool_end"; tool: string; result: string; durationMs: number }
+  | { type: "tool_error"; tool: string; error: string }
+  | { type: "responding" }
+  | { type: "cache_hit" }
+  | { type: "knowledge_hit"; source: string };
+
 export async function runAgentLoop(
   userMessage: string,
   options?: {
@@ -184,6 +193,7 @@ export async function runAgentLoop(
     systemPrompt?: string;
     history?: LLMMessage[];
     skipCache?: boolean;
+    onProgress?: (event: ProgressEvent) => void;
   }
 ): Promise<AgentResult> {
 
@@ -191,6 +201,7 @@ export async function runAgentLoop(
   if (!options?.skipCache) {
     const cached = getCachedResponse(userMessage);
     if (cached) {
+      options?.onProgress?.({ type: "cache_hit" });
       return {
         reply: cached.response,
         toolsUsed: [],
@@ -207,6 +218,7 @@ export async function runAgentLoop(
   // ── Layer 2: Knowledge-First Lookup ──
   const knowledgeResult = await knowledgeFirstLookup(userMessage);
   if (knowledgeResult?.found) {
+    options?.onProgress?.({ type: "knowledge_hit", source: knowledgeResult.source || "knowledge" });
     // Cache this for next time
     cacheResponse(userMessage, knowledgeResult.answer, 300);
     return {
@@ -328,6 +340,8 @@ export async function runAgentLoop(
 
   // Agent loop
   for (let i = 0; i < maxIterations; i++) {
+    options?.onProgress?.({ type: "thinking", iteration: i + 1 });
+
     // Token budget safety check
     if (totalTokens >= MAX_TOKEN_BUDGET) {
       logSecurityEvent("token_budget_exceeded", { totalTokens, maxBudget: MAX_TOKEN_BUDGET });
@@ -350,6 +364,7 @@ export async function runAgentLoop(
 
     // No tool calls — we have the final answer
     if (!response.toolCalls || response.toolCalls.length === 0) {
+      options?.onProgress?.({ type: "responding" });
       const reply = response.content || "(Soul had nothing to say)";
       // Cache the response for future similar questions
       cacheResponse(userMessage, reply, totalTokens);
@@ -388,16 +403,21 @@ export async function runAgentLoop(
       toolsUsed.push(toolName);
 
       let result: string;
+      const toolStart = Date.now();
       try {
         const tool = toolRegistry.get(toolName);
         if (!tool) {
           result = `Error: Unknown tool "${toolName}"`;
+          options?.onProgress?.({ type: "tool_error", tool: toolName, error: "Unknown tool" });
         } else {
           const args = JSON.parse(tc.function.arguments || "{}");
+          options?.onProgress?.({ type: "tool_start", tool: toolName, args });
           result = await tool.execute(args);
+          options?.onProgress?.({ type: "tool_end", tool: toolName, result: result.substring(0, 200), durationMs: Date.now() - toolStart });
         }
       } catch (err: any) {
         result = `Error executing ${toolName}: ${err.message}`;
+        options?.onProgress?.({ type: "tool_error", tool: toolName, error: err.message });
       }
 
       // Add tool result (truncate to prevent context overflow)
