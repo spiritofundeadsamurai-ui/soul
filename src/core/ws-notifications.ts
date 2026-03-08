@@ -9,6 +9,13 @@ import { createHash, randomUUID } from "crypto";
 import type { IncomingMessage } from "http";
 import type { Duplex } from "stream";
 
+// Chat handler — set by server.ts to avoid circular imports
+let chatHandler: ((message: string, sessionId: string, clientId: string) => Promise<void>) | null = null;
+
+export function setChatHandler(handler: (message: string, sessionId: string, clientId: string) => Promise<void>) {
+  chatHandler = handler;
+}
+
 interface WSClient {
   id: string;
   socket: Duplex;
@@ -147,6 +154,29 @@ export function initWebSocket(server: any): void {
         if (msg === "__pong__") {
           client.lastPing = Date.now();
           return;
+        }
+
+        // Handle chat messages from web UI
+        try {
+          const parsed = JSON.parse(msg);
+          if (parsed.type === "chat" && parsed.message && chatHandler) {
+            const sid = parsed.sessionId || `ws_${Date.now()}`;
+            // Notify client that Soul is thinking
+            socket.write(encodeFrame(JSON.stringify({
+              event: "chat_thinking",
+              data: { sessionId: sid },
+            })));
+            // Process asynchronously
+            chatHandler(parsed.message, sid, clientId).catch((err) => {
+              socket.write(encodeFrame(JSON.stringify({
+                event: "chat_error",
+                data: { error: err.message || "Processing failed", sessionId: sid },
+              })));
+            });
+            return;
+          }
+        } catch {
+          // Not JSON — treat as regular message
         }
 
         // Echo back with ack

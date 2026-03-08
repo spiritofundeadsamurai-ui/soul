@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Soul AI — Community</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    :root {
+      --bg: #0a0a0f; --bg2: #12121a; --bg3: #1a1a2e;
+      --text: #e0e0e8; --text2: #8888aa; --accent: #7c3aed;
+      --accent2: #a78bfa; --green: #22c55e; --cyan: #06b6d4;
+      --border: #2a2a3e; --glow: rgba(124, 58, 237, 0.15);
+    }
+    body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; }
+
+    /* Hero */
+    .hero { text-align: center; padding: 80px 20px 60px; position: relative; overflow: hidden; }
+    .hero::before { content: ''; position: absolute; top: -50%; left: -50%; width: 200%; height: 200%; background: radial-gradient(circle at 50% 50%, var(--glow) 0%, transparent 50%); animation: heroGlow 8s ease-in-out infinite; }
+    @keyframes heroGlow { 0%,100% { transform: scale(1); } 50% { transform: scale(1.2); } }
+    .hero h1 { font-size: 56px; font-weight: 800; background: linear-gradient(135deg, var(--accent), var(--cyan)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; position: relative; margin-bottom: 16px; }
+    .hero p { font-size: 20px; color: var(--text2); max-width: 600px; margin: 0 auto 32px; position: relative; line-height: 1.6; }
+    .hero-actions { display: flex; gap: 16px; justify-content: center; position: relative; flex-wrap: wrap; }
+    .btn { padding: 14px 32px; border-radius: 10px; font-size: 16px; font-weight: 600; cursor: pointer; border: none; text-decoration: none; transition: all 0.3s; display: inline-flex; align-items: center; gap: 8px; }
+    .btn-primary { background: var(--accent); color: white; }
+    .btn-primary:hover { background: #6d28d9; transform: translateY(-2px); box-shadow: 0 8px 24px rgba(124, 58, 237, 0.4); }
+    .btn-outline { background: transparent; color: var(--text); border: 2px solid var(--border); }
+    .btn-outline:hover { border-color: var(--accent); color: var(--accent2); transform: translateY(-2px); }
+
+    /* Nav */
+    .nav { display: flex; justify-content: space-between; align-items: center; padding: 16px 40px; border-bottom: 1px solid var(--border); background: var(--bg2); position: sticky; top: 0; z-index: 100; }
+    .nav .logo { font-size: 22px; font-weight: 700; background: linear-gradient(135deg, var(--accent), var(--cyan)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; text-decoration: none; }
+    .nav-links { display: flex; gap: 24px; align-items: center; }
+    .nav-links a { color: var(--text2); text-decoration: none; font-size: 14px; transition: color 0.2s; }
+    .nav-links a:hover { color: var(--text); }
+
+    /* Sections */
+    .section { max-width: 1100px; margin: 0 auto; padding: 80px 20px; }
+    .section h2 { font-size: 36px; font-weight: 700; margin-bottom: 16px; text-align: center; }
+    .section .subtitle { text-align: center; color: var(--text2); font-size: 16px; max-width: 600px; margin: 0 auto 48px; line-height: 1.6; }
+
+    /* Feature Grid */
+    .features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; }
+    @media (max-width: 900px) { .features { grid-template-columns: 1fr; } }
+    .feature-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 16px; padding: 32px; transition: all 0.3s; }
+    .feature-card:hover { border-color: var(--accent); transform: translateY(-4px); box-shadow: 0 8px 32px rgba(0,0,0,0.3); }
+    .feature-icon { font-size: 36px; margin-bottom: 16px; }
+    .feature-card h3 { font-size: 18px; margin-bottom: 8px; }
+    .feature-card p { color: var(--text2); font-size: 14px; line-height: 1.6; }
+
+    /* Stats */
+    .stats-row { display: flex; justify-content: center; gap: 48px; flex-wrap: wrap; margin: 48px 0; }
+    .stat { text-align: center; }
+    .stat .num { font-size: 48px; font-weight: 800; background: linear-gradient(135deg, var(--accent), var(--cyan)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .stat .label { color: var(--text2); font-size: 14px; margin-top: 4px; }
+
+    /* How it works */
+    .steps { display: flex; gap: 32px; flex-wrap: wrap; justify-content: center; }
+    .step { flex: 1; min-width: 250px; max-width: 320px; text-align: center; }
+    .step-num { width: 48px; height: 48px; border-radius: 50%; background: var(--accent); color: white; font-size: 20px; font-weight: 700; display: flex; align-items: center; justify-content: center; margin: 0 auto 16px; }
+    .step h3 { margin-bottom: 8px; }
+    .step p { color: var(--text2); font-size: 14px; line-height: 1.6; }
+
+    /* Code block */
+    .code-block { background: var(--bg2); border: 1px solid var(--border); border-radius: 12px; padding: 24px; font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: 14px; line-height: 1.8; overflow-x: auto; max-width: 700px; margin: 0 auto; }
+    .code-block .comment { color: var(--text2); }
+    .code-block .cmd { color: var(--green); }
+    .code-block .output { color: var(--accent2); }
+
+    /* Community Cards */
+    .community-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 24px; }
+    @media (max-width: 700px) { .community-grid { grid-template-columns: 1fr; } }
+    .community-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 16px; padding: 28px; display: flex; gap: 16px; align-items: flex-start; transition: all 0.3s; }
+    .community-card:hover { border-color: var(--accent); }
+    .community-card .icon { font-size: 32px; flex-shrink: 0; }
+    .community-card h3 { margin-bottom: 6px; }
+    .community-card p { color: var(--text2); font-size: 14px; line-height: 1.5; }
+    .community-card a { color: var(--accent2); text-decoration: none; font-size: 13px; margin-top: 8px; display: inline-block; }
+    .community-card a:hover { text-decoration: underline; }
+
+    /* Brain Hub */
+    .brain-hub { background: linear-gradient(135deg, var(--bg3), var(--bg2)); border: 1px solid var(--border); border-radius: 20px; padding: 48px; text-align: center; margin-top: 48px; }
+    .brain-hub h3 { font-size: 28px; margin-bottom: 12px; }
+    .brain-hub p { color: var(--text2); max-width: 500px; margin: 0 auto 24px; line-height: 1.6; }
+    .brain-hub .flow { display: flex; justify-content: center; align-items: center; gap: 16px; flex-wrap: wrap; margin-top: 24px; }
+    .brain-hub .flow-step { background: var(--bg); padding: 16px 24px; border-radius: 10px; border: 1px solid var(--border); font-size: 14px; }
+    .brain-hub .flow-arrow { color: var(--accent2); font-size: 20px; }
+
+    /* Footer */
+    .footer { text-align: center; padding: 48px 20px; border-top: 1px solid var(--border); color: var(--text2); font-size: 14px; }
+    .footer a { color: var(--accent2); text-decoration: none; }
+    .footer a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <nav class="nav">
+    <a href="/" class="logo">Soul AI</a>
+    <div class="nav-links">
+      <a href="/">Dashboard</a>
+      <a href="/chat">Chat</a>
+      <a href="/office">Office</a>
+      <a href="#features">Features</a>
+      <a href="#community">Community</a>
+      <a href="https://github.com/spiritofundeadsamurai-ui/soul" target="_blank">GitHub</a>
+    </div>
+  </nav>
+
+  <div class="hero">
+    <h1>Soul AI</h1>
+    <p>Your Personal AI Companion.<br>Local-first. Private. Loyal.<br>308 tools. Works with Ollama (free) or any LLM.</p>
+    <div class="hero-actions">
+      <a href="https://github.com/spiritofundeadsamurai-ui/soul" class="btn btn-primary" target="_blank">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+        Star on GitHub
+      </a>
+      <a href="#install" class="btn btn-outline">Install Now</a>
+    </div>
+  </div>
+
+  <div class="stats-row">
+    <div class="stat"><div class="num">308</div><div class="label">MCP Tools</div></div>
+    <div class="stat"><div class="num">31</div><div class="label">Core Engines</div></div>
+    <div class="stat"><div class="num">7+</div><div class="label">LLM Providers</div></div>
+    <div class="stat"><div class="num">100%</div><div class="label">Local & Private</div></div>
+  </div>
+
+  <div class="section" id="features">
+    <h2>What Makes Soul Different</h2>
+    <p class="subtitle">Soul isn't just another chatbot. It's your personal AI that lives on your machine, remembers everything, and grows with you.</p>
+
+    <div class="features">
+      <div class="feature-card">
+        <div class="feature-icon">&#129504;</div>
+        <h3>Persistent Memory</h3>
+        <p>Everything Soul learns is stored locally in SQLite. Conversations, knowledge, patterns, wisdom — nothing is forgotten.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">&#128274;</div>
+        <h3>Privacy First</h3>
+        <p>Your data never leaves your machine. Works fully offline with Ollama. No cloud dependency, no data collection.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">&#9889;</div>
+        <h3>308 Real Tools</h3>
+        <p>Not just chat — Soul can research, code, manage goals, track time, create documents, analyze emotions, and more.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">&#127891;</div>
+        <h3>Grows Smarter</h3>
+        <p>Learning paths, pattern extraction, feedback loops, and spaced repetition. Soul learns from every interaction.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">&#128101;</div>
+        <h3>Soul Family</h3>
+        <p>Spawn specialized child agents. A researcher, a coder, a writer — they collaborate and share knowledge.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">&#127760;</div>
+        <h3>Any LLM Brain</h3>
+        <p>Ollama (free), OpenAI, Claude, Gemini, Groq, DeepSeek, Together — plug in any brain you want.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="install">
+    <h2>Get Started in 3 Steps</h2>
+    <p class="subtitle">From zero to your own AI companion in under 5 minutes.</p>
+
+    <div class="steps">
+      <div class="step">
+        <div class="step-num">1</div>
+        <h3>Install</h3>
+        <p><code>npm install -g soul-ai</code></p>
+      </div>
+      <div class="step">
+        <div class="step-num">2</div>
+        <h3>Setup</h3>
+        <p><code>soul-setup</code><br>Choose your brain, set passphrase</p>
+      </div>
+      <div class="step">
+        <div class="step-num">3</div>
+        <h3>Chat</h3>
+        <p><code>soul</code><br>Start talking. Soul remembers.</p>
+      </div>
+    </div>
+
+    <div class="code-block" style="margin-top: 48px;">
+      <span class="comment"># Install Soul globally</span><br>
+      <span class="cmd">$ npm install -g soul-ai</span><br><br>
+      <span class="comment"># Run the setup wizard</span><br>
+      <span class="cmd">$ soul-setup</span><br>
+      <span class="output">  Choose brain: [1] Ollama (free, local) [2] Cloud API</span><br>
+      <span class="output">  Pulling qwen3:14b... Done!</span><br>
+      <span class="output">  Master passphrase: ****</span><br><br>
+      <span class="comment"># Start chatting</span><br>
+      <span class="cmd">$ soul</span><br>
+      <span class="output">  Soul AI Agent — Ready</span><br>
+      <span class="output">  You > Hello, who are you?</span><br>
+      <span class="output">  Soul > I'm Soul, your personal AI companion...</span><br><br>
+      <span class="comment"># Or use as MCP server in Claude Code</span><br>
+      <span class="cmd">$ claude mcp add soul -- npx soul-mcp</span><br><br>
+      <span class="comment"># Or run the web dashboard</span><br>
+      <span class="cmd">$ soul-server</span><br>
+      <span class="output">  Web UI: http://localhost:47779/</span>
+    </div>
+  </div>
+
+  <div class="section" id="community">
+    <h2>Join the Community</h2>
+    <p class="subtitle">Soul is open source. Help us build the future of personal AI.</p>
+
+    <div class="community-grid">
+      <div class="community-card">
+        <div class="icon">&#128172;</div>
+        <div>
+          <h3>GitHub Discussions</h3>
+          <p>Ask questions, share ideas, show what you've built with Soul.</p>
+          <a href="https://github.com/spiritofundeadsamurai-ui/soul/discussions" target="_blank">Join the discussion &#8594;</a>
+        </div>
+      </div>
+      <div class="community-card">
+        <div class="icon">&#128027;</div>
+        <div>
+          <h3>Report Issues</h3>
+          <p>Found a bug? Let us know. Every report makes Soul better.</p>
+          <a href="https://github.com/spiritofundeadsamurai-ui/soul/issues" target="_blank">Report an issue &#8594;</a>
+        </div>
+      </div>
+      <div class="community-card">
+        <div class="icon">&#128736;</div>
+        <div>
+          <h3>Contribute Code</h3>
+          <p>Add new tools, fix bugs, improve docs. All contributions welcome.</p>
+          <a href="https://github.com/spiritofundeadsamurai-ui/soul/blob/master/CONTRIBUTING.md" target="_blank">Read the guide &#8594;</a>
+        </div>
+      </div>
+      <div class="community-card">
+        <div class="icon">&#129513;</div>
+        <div>
+          <h3>Share Brain Packs</h3>
+          <p>Export your Soul's knowledge and share it with others. Collective intelligence.</p>
+          <a href="#brain-hub">Learn about Brain Hub &#8594;</a>
+        </div>
+      </div>
+    </div>
+
+    <div class="brain-hub" id="brain-hub">
+      <h3>Brain Hub</h3>
+      <p>Share knowledge between Soul instances. Export what you've learned, import what others know. Collective intelligence without sacrificing privacy.</p>
+      <div class="flow">
+        <div class="flow-step">Your Soul learns</div>
+        <div class="flow-arrow">&#8594;</div>
+        <div class="flow-step">Export Brain Pack</div>
+        <div class="flow-arrow">&#8594;</div>
+        <div class="flow-step">Share on GitHub</div>
+        <div class="flow-arrow">&#8594;</div>
+        <div class="flow-step">Others import</div>
+        <div class="flow-arrow">&#8594;</div>
+        <div class="flow-step">Everyone grows</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">
+    <p>Soul AI — Open Source, Local-first AI Companion</p>
+    <p style="margin-top: 8px;">
+      <a href="https://github.com/spiritofundeadsamurai-ui/soul">GitHub</a> &middot;
+      <a href="/chat">Chat</a> &middot;
+      <a href="/">Dashboard</a> &middot;
+      MIT License
+    </p>
+  </div>
+</body>
+</html>

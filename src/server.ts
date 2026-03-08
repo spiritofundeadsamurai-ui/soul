@@ -36,7 +36,7 @@ import { getDefaultConfig, listConfiguredProviders, getUsageStats, type LLMMessa
 import { runAgentLoop, registerAllInternalTools, saveConversationTurn, getConversationHistory, listSessions } from "./core/agent-loop.js";
 import { createAuthToken, validateAuthToken, checkRateLimit, logSecurityEvent } from "./core/security.js";
 import { startScheduler } from "./core/scheduler.js";
-import { initWebSocket } from "./core/ws-notifications.js";
+import { initWebSocket, setChatHandler, sendToClient } from "./core/ws-notifications.js";
 import { createHash } from "crypto";
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
@@ -116,6 +116,28 @@ app.get("/office", (c) => {
     return c.html(html);
   } catch {
     return c.text("Soul Office UI not found.", 404);
+  }
+});
+
+app.get("/chat", (c) => {
+  try {
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname = dirname(__filename);
+    const html = readFileSync(join(__dirname, "web", "chat.html"), "utf-8");
+    return c.html(html);
+  } catch {
+    return c.text("Soul Chat UI not found.", 404);
+  }
+});
+
+app.get("/community", (c) => {
+  try {
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname = dirname(__filename);
+    const html = readFileSync(join(__dirname, "web", "community.html"), "utf-8");
+    return c.html(html);
+  } catch {
+    return c.text("Soul Community page not found.", 404);
   }
 });
 
@@ -547,6 +569,33 @@ async function main() {
 
   // Initialize WebSocket on the raw HTTP server
   initWebSocket(httpServer);
+
+  // Wire up WebSocket chat handler — messages from web chat go through agent loop
+  setChatHandler(async (message, sessionId, clientId) => {
+    registerAllInternalTools();
+    const history = getConversationHistory(sessionId, 20);
+    saveConversationTurn(sessionId, "user", message);
+
+    const startTime = Date.now();
+    const result = await runAgentLoop(message, {
+      maxIterations: 10,
+      temperature: 0.7,
+      history,
+    });
+
+    saveConversationTurn(sessionId, "assistant", result.reply);
+
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    sendToClient(clientId, "chat_response", {
+      reply: result.reply,
+      model: result.model,
+      provider: result.provider,
+      toolsUsed: result.toolsUsed,
+      totalTokens: result.totalTokens,
+      sessionId,
+      elapsed,
+    });
+  });
 }
 
 main().catch((err) => {
