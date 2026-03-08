@@ -89,20 +89,23 @@ function showCommandSuggestions(filter?: string) {
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 let spinnerInterval: ReturnType<typeof setInterval> | null = null;
 let spinnerFrame = 0;
+let activeRl: readline.Interface | null = null; // Reference to readline for cursor management
 
 function startSpinner(msg: string) {
   stopSpinner();
   spinnerFrame = 0;
-  process.stdout.write(`\n${C.dim}  ${SPINNER_FRAMES[0]} ${msg}${C.reset}`);
+  // Save cursor, write spinner on its own line
+  console.log(`${C.dim}  ${SPINNER_FRAMES[0]} ${msg}${C.reset}`);
   spinnerInterval = setInterval(() => {
     spinnerFrame = (spinnerFrame + 1) % SPINNER_FRAMES.length;
-    process.stdout.write(`\r${C.dim}  ${SPINNER_FRAMES[spinnerFrame]} ${msg}${C.reset}`);
+    // Move up one line, clear it, write new frame, move back down
+    process.stdout.write(`\x1b[1A\r\x1b[K${C.dim}  ${SPINNER_FRAMES[spinnerFrame]} ${msg}${C.reset}\n`);
   }, 80);
 }
 
 function updateSpinner(msg: string) {
   if (spinnerInterval) {
-    process.stdout.write(`\r\x1b[K${C.dim}  ${SPINNER_FRAMES[spinnerFrame]} ${msg}${C.reset}`);
+    process.stdout.write(`\x1b[1A\r\x1b[K${C.dim}  ${SPINNER_FRAMES[spinnerFrame]} ${msg}${C.reset}\n`);
   }
 }
 
@@ -110,7 +113,8 @@ function stopSpinner() {
   if (spinnerInterval) {
     clearInterval(spinnerInterval);
     spinnerInterval = null;
-    process.stdout.write("\r\x1b[K");
+    // Clear the spinner line
+    process.stdout.write(`\x1b[1A\r\x1b[K`);
   }
 }
 
@@ -247,6 +251,7 @@ async function main() {
     historySize: 200,
     completer,
   });
+  activeRl = rl; // Store reference for re-prompting during processing
 
   rl.prompt();
 
@@ -342,11 +347,13 @@ async function main() {
     if (debounceTimer) clearTimeout(debounceTimer);
     debounceTimer = setTimeout(flushDebounce, DEBOUNCE_MS);
 
-    // Show feedback if Soul is busy
+    // Always re-show prompt so user can keep typing
+    // Even while Soul is busy processing, the input stays visible
     if (isProcessing) {
-      const pending = messageQueue.length + 1; // +1 for current buffer
+      const pending = messageQueue.length + debounceBuffer.length;
       console.log(`${C.dim}  (queued — ${pending} message${pending > 1 ? "s" : ""} waiting)${C.reset}`);
     }
+    rl.prompt();
   });
 
   rl.on("close", () => {
@@ -442,6 +449,9 @@ async function handleMessage(input: string, sessionId: string) {
       console.log(`${C.yellow}Is Ollama running? Start it with: ${C.cyan}ollama serve${C.reset}`);
     }
   }
+
+  // Always re-show prompt after response finishes
+  if (activeRl) activeRl.prompt();
 }
 
 // ─── Commands ───
