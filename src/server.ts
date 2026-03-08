@@ -33,7 +33,7 @@ import { listAutoGoals, getGoalsDashboard } from "./core/goal-autopilot.js";
 import { listWorkflows, getWorkflowRuns } from "./core/workflow-engine.js";
 import { listResearchProjects } from "./core/deep-research.js";
 import { getDefaultConfig, listConfiguredProviders, getUsageStats, type LLMMessage } from "./core/llm-connector.js";
-import { runAgentLoop, registerAllInternalTools, saveConversationTurn, getConversationHistory, listSessions } from "./core/agent-loop.js";
+import { runAgentLoop, registerAllInternalTools, saveConversationTurn, getConversationHistory, listSessions, getRegisteredTools } from "./core/agent-loop.js";
 import { createAuthToken, validateAuthToken, checkRateLimit, logSecurityEvent } from "./core/security.js";
 import { startScheduler } from "./core/scheduler.js";
 import { initWebSocket, setChatHandler, sendToClient } from "./core/ws-notifications.js";
@@ -162,6 +162,130 @@ app.get("/api/philosophy", (c) => {
 
 app.get("/api/identity", (c) => {
   return c.json({ identity: soul.getIdentity() });
+});
+
+// Brain Map — public endpoint for real visualization data
+app.get("/api/brain-map", async (c) => {
+  const tools = getRegisteredTools();
+  const status = await soul.getStatus();
+
+  // Load full tool catalog (302+ tools) as fallback when agent-loop has fewer
+  let catalogData: any = null;
+  try {
+    const catalogPath = join(dirname(fileURLToPath(import.meta.url)), "core", "tool-catalog.json");
+    catalogData = JSON.parse(readFileSync(catalogPath, "utf-8"));
+  } catch {}
+
+  // If catalog has more tools than runtime registry, use catalog for completeness
+  const useCatalog = catalogData && catalogData.totalTools > tools.length;
+
+  // Group tools by category (extract prefix: soul_web_ → web, soul_code_ → code, etc.)
+  const engineMap = new Map<string, { name: string; tools: string[]; color: string }>();
+  const ENGINE_COLORS: Record<string, string> = {
+    core: "#7c3aed", memory: "#3b82f6", knowledge: "#06b6d4", thinking: "#22c55e",
+    creative: "#eab308", life: "#ef4444", code: "#f97316", people: "#ec4899",
+    research: "#8b5cf6", autonomy: "#14b8a6", family: "#ff6b9d", coworker: "#f59e0b",
+    awareness: "#6366f1", emotion: "#e879f9", time: "#10b981", learning: "#84cc16",
+    workflow: "#0ea5e9", goal: "#f43f5e", brain: "#a78bfa", network: "#38bdf8",
+    media: "#fb923c", file: "#64748b", web: "#facc15", notification: "#c084fc",
+    channel: "#2dd4bf", sync: "#818cf8", skill: "#fb7185", feedback: "#4ade80",
+    prompt: "#fbbf24", genius: "#a855f7", hardware: "#94a3b8", classify: "#f472b6",
+    distill: "#67e8f9", search: "#34d399", video: "#fca5a1", capture: "#bef264",
+  };
+
+  for (const tool of tools) {
+    // Extract engine from tool name: soul_web_search → web, soul_code_pattern → code
+    const parts = tool.name.replace("soul_", "").split("_");
+    let engine = parts[0];
+    // Map common prefixes to engines
+    if (["learn", "search", "recall", "remember", "status", "setup"].includes(engine)) engine = "core";
+    if (["mood", "detect"].includes(engine)) engine = "emotion";
+    if (["timer", "time"].includes(engine)) engine = "time";
+    if (["snippet", "template", "recommend"].includes(engine)) engine = "code";
+    if (["person", "people"].includes(engine)) engine = "people";
+    if (["note", "idea", "bookmark"].includes(engine)) engine = "capture";
+    if (["url", "block", "safety"].includes(engine)) engine = "web";
+    if (["spawn", "evolve", "fuse", "retire"].includes(engine)) engine = "family";
+    if (["assign", "auto", "team", "work", "expertise"].includes(engine)) engine = "coworker";
+    if (["deep"].includes(engine)) engine = "research";
+    if (["goal", "autopilot", "goals"].includes(engine)) engine = "goal";
+    if (["brain", "mode"].includes(engine)) engine = "brain";
+    if (["workflow", "workflows"].includes(engine)) engine = "workflow";
+    if (["prompt", "prompts"].includes(engine)) engine = "prompt";
+    if (["feedback"].includes(engine)) engine = "feedback";
+    if (["classify"].includes(engine)) engine = "classify";
+    if (["distill"].includes(engine)) engine = "distill";
+    if (["genius"].includes(engine)) engine = "genius";
+    if (["hardware"].includes(engine)) engine = "hardware";
+    if (["create"].includes(engine)) engine = "media";
+    if (["read", "list", "analyze", "file"].includes(engine)) engine = "file";
+    if (["llm", "smart", "route"].includes(engine)) engine = "core";
+    if (["collab", "collective", "handoff"].includes(engine)) engine = "coworker";
+    if (["think", "brainstorm", "decompose", "decide"].includes(engine)) engine = "thinking";
+    if (["write", "teach", "feel", "communicate"].includes(engine)) engine = "creative";
+    if (["introspect", "ethics", "metacognize", "anticipate"].includes(engine)) engine = "awareness";
+    if (["reflect", "habit", "motivate", "advice"].includes(engine)) engine = "life";
+    if (["notify", "notifications"].includes(engine)) engine = "notification";
+    if (["channel", "send", "messages"].includes(engine)) engine = "channel";
+    if (["export", "import"].includes(engine)) engine = "sync";
+    if (["skill"].includes(engine)) engine = "skill";
+    if (["mistake", "preference", "suggest", "check"].includes(engine)) engine = "core";
+    if (["conversation", "recall"].includes(engine)) engine = "memory";
+    if (["digest", "weekly"].includes(engine)) engine = "core";
+    if (["prime", "reason", "explain", "growth", "self"].includes(engine)) engine = "thinking";
+    if (["know"].includes(engine)) engine = "knowledge";
+    if (["task", "tasks", "remind"].includes(engine)) engine = "autonomy";
+    if (["path", "milestone", "resource"].includes(engine)) engine = "learning";
+
+    if (!engineMap.has(engine)) {
+      engineMap.set(engine, {
+        name: engine.charAt(0).toUpperCase() + engine.slice(1),
+        tools: [],
+        color: ENGINE_COLORS[engine] || "#888",
+      });
+    }
+    engineMap.get(engine)!.tools.push(tool.name);
+  }
+
+  // Get real memories (try without auth since this is a public endpoint)
+  let memories: any[] = [];
+  let knowledgeEntries: any[] = [];
+  let children: any[] = [];
+  try { memories = await getRecentMemories(150); } catch {}
+  try { knowledgeEntries = await getKnowledge(undefined, undefined, 50) || []; } catch {}
+  try { children = await listChildren() || []; } catch {}
+
+  // Build final engine list — prefer catalog (complete) over runtime (partial)
+  let finalEngines: any[];
+  let finalTotalTools: number;
+
+  if (useCatalog) {
+    finalEngines = Object.entries(catalogData.engines).map(([id, e]: [string, any]) => ({
+      id, name: e.name, toolCount: e.tools.length, tools: e.tools, color: e.color,
+    }));
+    finalTotalTools = catalogData.totalTools;
+  } else {
+    finalEngines = Array.from(engineMap.entries()).map(([id, e]) => ({
+      id, name: e.name, toolCount: e.tools.length, tools: e.tools, color: e.color,
+    }));
+    finalTotalTools = tools.length;
+  }
+
+  return c.json({
+    engines: finalEngines,
+    totalTools: finalTotalTools,
+    memories: memories.map(m => ({
+      id: m.id, type: m.type, content: (m.content || "").substring(0, 100),
+      tags: m.tags, created_at: m.created_at,
+    })),
+    knowledge: (Array.isArray(knowledgeEntries) ? knowledgeEntries : []).map((k: any) => ({
+      id: k.id, title: k.title, category: k.category, confidence: k.confidence,
+    })),
+    children: (children || []).map((ch: any) => ({
+      id: ch.id, name: ch.name, specialty: ch.specialty, status: ch.status,
+    })),
+    soul: { version: status.version, master: status.masterName, uptime: status.uptime },
+  });
 });
 
 // === Auth-protected data routes (for Web UI) ===
@@ -548,6 +672,7 @@ app.get("/api/llm/status", authMiddleware(), async (c) => {
 
 async function main() {
   await soul.initialize();
+  registerAllInternalTools(); // Register 308 tools at startup for brain-map API
 
   const masterInfo = soul.getMaster();
 

@@ -337,18 +337,11 @@
       } else { el.innerHTML = '<div class="empty"><p>Philosophy not loaded.</p></div>'; }
     }
 
-    // 3D Brain — Enhanced with labels, soul children, search, zoom, fullscreen
+    // 3D Brain — Real data visualization from /api/brain-map
     let brainInit = false, brainScale = 1, brainNodes = [], brainProj = [], brainSearchTerm = '';
     let brainShowLabels = true;
-    const BRAIN_COLORS = {
-      knowledge:'#3b82f6', wisdom:'#7c3aed', conversation:'#22c55e', learning:'#eab308',
-      experience:'#ef4444', reflection:'#06b6d4', soul_child:'#ff6b9d'
-    };
-    const BRAIN_TYPE_LABELS = {
-      knowledge:'Knowledge', wisdom:'Wisdom', conversation:'Conversation', learning:'Learning',
-      experience:'Experience', reflection:'Reflection', soul_child:'Soul Child'
-    };
-    const brainTypes = ['knowledge','wisdom','conversation','learning','experience','reflection'];
+    let brainData = null; // Store API response
+    const BRAIN_TYPE_LABELS = {};
 
     function brainZoom(delta) {
       if (delta === 0) { brainScale = 1; return; }
@@ -381,75 +374,115 @@
       return s.length > max ? s.substring(0, max) + '...' : s;
     }
 
+    // Convert hex color to rgba string
+    function hexToRgba(hex, alpha) {
+      const h = hex.replace('#', '');
+      const r = parseInt(h.substring(0,2), 16) || 0;
+      const g = parseInt(h.substring(2,4), 16) || 0;
+      const b = parseInt(h.substring(4,6), 16) || 0;
+      return `rgba(${r},${g},${b},${alpha})`;
+    }
+
     async function initBrain() {
       if (brainInit) return; brainInit = true;
       const c = document.getElementById('brainCanvas');
       const ctx = c.getContext('2d');
       resizeBrainCanvas();
 
-      // Load real memories + soul children in parallel
-      const [memData, familyData, knData] = await Promise.all([
-        api('/api/memories/recent?limit=150'),
-        api('/api/soul-family'),
-        api('/api/knowledge/list?limit=50'),
-      ]);
-
+      // Load REAL data from brain-map API (public, no auth needed)
+      brainData = await api('/api/brain-map');
       brainNodes = [];
 
-      // Add Soul Core node (center)
-      brainNodes.push({
-        x: 0, y: 0, z: 0, type: 'soul_child', size: 12, p: 0,
-        label: 'Soul Core', id: 0, tags: '', isSoulCore: true, isChild: false
-      });
+      const BRAIN_COLORS = {};
 
-      // Add soul children as large orbital nodes
-      if (familyData?.children?.length > 0) {
-        familyData.children.forEach((child, i) => {
-          const angle = (i / familyData.children.length) * Math.PI * 2;
-          const r = 60;
+      if (brainData) {
+        // ═══ Soul Core (center) ═══
+        brainNodes.push({
+          x: 0, y: 0, z: 0, type: 'soul_core', size: 14, p: 0,
+          label: `Soul v${brainData.soul?.version || '?'} — ${brainData.totalTools} tools`,
+          id: 0, tags: '', isSoulCore: true, isChild: false, isEngine: false, isTool: false,
+          engineId: null, color: '#a78bfa'
+        });
+
+        // ═══ Real Engine nodes (inner ring) ═══
+        const engines = brainData.engines || [];
+        engines.forEach((eng, i) => {
+          const angle = (i / engines.length) * Math.PI * 2;
+          const r = 55 + Math.sqrt(eng.toolCount) * 8;
+          const nodeSize = 5 + Math.min(eng.toolCount / 8, 6);
+          BRAIN_COLORS[eng.id] = eng.color;
+          BRAIN_TYPE_LABELS[eng.id] = `${eng.name} (${eng.toolCount})`;
           brainNodes.push({
-            x: r * Math.cos(angle), y: r * Math.sin(angle), z: 20 * Math.sin(angle * 2),
-            type: 'soul_child', size: 8, p: angle,
-            label: child.name + ' (' + child.specialty + ')',
-            id: child.id, tags: child.specialty, isSoulCore: false, isChild: true
+            x: r * Math.cos(angle), y: r * Math.sin(angle), z: 15 * Math.sin(angle * 3),
+            type: eng.id, size: nodeSize, p: angle,
+            label: `${eng.name} Engine — ${eng.toolCount} tools`,
+            id: `engine_${eng.id}`, tags: eng.tools.join(', '), isSoulCore: false, isChild: false,
+            isEngine: true, isTool: false, engineId: eng.id, color: eng.color
+          });
+
+          // ═══ Real Tool nodes (around their engine) ═══
+          eng.tools.forEach((toolName, j) => {
+            const tAngle = angle + ((j / eng.tools.length) - 0.5) * (Math.PI * 2 / engines.length) * 0.8;
+            const tR = r + 30 + Math.random() * 40;
+            const tZ = (Math.random() - 0.5) * 60;
+            brainNodes.push({
+              x: tR * Math.cos(tAngle), y: tR * Math.sin(tAngle), z: tZ,
+              type: eng.id, size: 1.5 + Math.random() * 1.5, p: Math.random() * 6.28,
+              label: toolName.replace('soul_', ''),
+              id: toolName, tags: eng.name, isSoulCore: false, isChild: false,
+              isEngine: false, isTool: true, engineId: eng.id, color: eng.color
+            });
           });
         });
-      }
 
-      // Add memory nodes
-      if (memData?.memories?.length > 0) {
-        memData.memories.forEach(m => {
-          const th = Math.random()*Math.PI*2, ph = Math.acos(2*Math.random()-1), r = 100+Math.random()*100;
-          brainNodes.push({
-            x: r*Math.sin(ph)*Math.cos(th), y: r*Math.sin(ph)*Math.sin(th), z: r*Math.cos(ph),
-            type: m.type || 'knowledge', size: 2+Math.random()*3, p: Math.random()*6.28,
-            label: truncLabel(m.content, 50), id: m.id, tags: m.tags||'',
-            isSoulCore: false, isChild: false
+        // ═══ Soul Children (special orbit) ═══
+        if (brainData.children?.length > 0) {
+          BRAIN_COLORS['soul_child'] = '#ff6b9d';
+          BRAIN_TYPE_LABELS['soul_child'] = `Soul Children (${brainData.children.length})`;
+          brainData.children.forEach((child, i) => {
+            const angle = (i / brainData.children.length) * Math.PI * 2;
+            brainNodes.push({
+              x: 40 * Math.cos(angle), y: 40 * Math.sin(angle), z: 25 * Math.sin(angle * 2),
+              type: 'soul_child', size: 8, p: angle,
+              label: child.name + (child.specialty ? ' (' + child.specialty + ')' : ''),
+              id: child.id, tags: child.specialty || '', isSoulCore: false, isChild: true,
+              isEngine: false, isTool: false, engineId: null, color: '#ff6b9d'
+            });
           });
-        });
-      }
+        }
 
-      // Add knowledge nodes (different shell)
-      if (knData?.entries?.length > 0) {
-        knData.entries.forEach(k => {
-          const th = Math.random()*Math.PI*2, ph = Math.acos(2*Math.random()-1), r = 140+Math.random()*60;
-          brainNodes.push({
-            x: r*Math.sin(ph)*Math.cos(th), y: r*Math.sin(ph)*Math.sin(th), z: r*Math.cos(ph),
-            type: 'knowledge', size: 2+Math.min(k.confidence||0.5, 1)*3, p: Math.random()*6.28,
-            label: truncLabel(k.title, 40), id: k.id, tags: k.category||'',
-            isSoulCore: false, isChild: false
+        // ═══ Real Memory nodes (outer shell) ═══
+        if (brainData.memories?.length > 0) {
+          BRAIN_COLORS['memory'] = '#3b82f6';
+          BRAIN_TYPE_LABELS['memory'] = `Memories (${brainData.memories.length})`;
+          brainData.memories.forEach(m => {
+            const th = Math.random()*Math.PI*2, ph = Math.acos(2*Math.random()-1);
+            const r = 180 + Math.random() * 40;
+            const memColor = m.type === 'wisdom' ? '#7c3aed' : m.type === 'learning' ? '#eab308' : '#3b82f6';
+            brainNodes.push({
+              x: r*Math.sin(ph)*Math.cos(th), y: r*Math.sin(ph)*Math.sin(th), z: r*Math.cos(ph),
+              type: 'memory', size: 2 + Math.random() * 2, p: Math.random() * 6.28,
+              label: truncLabel(m.content, 50), id: m.id, tags: m.type || '',
+              isSoulCore: false, isChild: false, isEngine: false, isTool: false,
+              engineId: null, color: memColor
+            });
           });
-        });
-      }
+        }
 
-      // If no data, generate placeholder nodes
-      if (brainNodes.length <= 1) {
-        for (let i = 0; i < 100; i++) {
-          const th = Math.random()*Math.PI*2, ph = Math.acos(2*Math.random()-1), r = 80+Math.random()*120;
-          brainNodes.push({
-            x: r*Math.sin(ph)*Math.cos(th), y: r*Math.sin(ph)*Math.sin(th), z: r*Math.cos(ph),
-            type: brainTypes[Math.floor(Math.random()*brainTypes.length)], size: 2+Math.random()*3, p: Math.random()*6.28,
-            label: '', id: 0, tags: '', isSoulCore: false, isChild: false
+        // ═══ Real Knowledge nodes (outer shell, different layer) ═══
+        if (brainData.knowledge?.length > 0) {
+          BRAIN_COLORS['knowledge_item'] = '#06b6d4';
+          BRAIN_TYPE_LABELS['knowledge_item'] = `Knowledge (${brainData.knowledge.length})`;
+          brainData.knowledge.forEach(k => {
+            const th = Math.random()*Math.PI*2, ph = Math.acos(2*Math.random()-1);
+            const r = 210 + Math.random() * 30;
+            brainNodes.push({
+              x: r*Math.sin(ph)*Math.cos(th), y: r*Math.sin(ph)*Math.sin(th), z: r*Math.cos(ph),
+              type: 'knowledge_item', size: 2 + Math.min((k.confidence || 0.5), 1) * 3, p: Math.random() * 6.28,
+              label: truncLabel(k.title, 40), id: k.id, tags: k.category || '',
+              isSoulCore: false, isChild: false, isEngine: false, isTool: false,
+              engineId: null, color: '#06b6d4'
+            });
           });
         }
       }
@@ -472,10 +505,19 @@
           tip.style.display = 'block';
           tip.style.left = (e.clientX+12)+'px'; tip.style.top = (e.clientY-8)+'px';
           const n = hoveredNode.node;
-          const typeLabel = BRAIN_TYPE_LABELS[n.type] || n.type;
-          let html = `<div style="color:${BRAIN_COLORS[n.type]||'#fff'};font-weight:700;font-size:14px">${n.isChild||n.isSoulCore ? n.label : typeLabel}</div>`;
-          if (!n.isSoulCore && !n.isChild) html += `<div style="color:var(--text);margin-top:4px;line-height:1.4">${esc(n.label)}</div>`;
-          if (n.id) html += `<div style="color:var(--text2);margin-top:3px;font-size:11px">#${n.id}${n.tags ? ' | ' + esc(typeof n.tags === 'string' ? n.tags : '') : ''}</div>`;
+          const nodeColor = n.color || '#fff';
+          let html = `<div style="color:${nodeColor};font-weight:700;font-size:14px">${n.label}</div>`;
+          if (n.isEngine) {
+            const eng = brainData?.engines?.find(e => e.id === n.engineId);
+            if (eng) html += `<div style="color:var(--text);margin-top:4px;font-size:12px;line-height:1.4;max-height:100px;overflow:auto">${eng.tools.map(t => t.replace('soul_','')).join(', ')}</div>`;
+          }
+          if (n.isTool) html += `<div style="color:var(--text2);margin-top:3px;font-size:11px">Engine: ${n.tags}</div>`;
+          if (n.id && !n.isSoulCore && !n.isEngine && !n.isTool) {
+            html += `<div style="color:var(--text2);margin-top:3px;font-size:11px">#${n.id}${n.tags ? ' | ' + esc(typeof n.tags === 'string' ? n.tags : '') : ''}</div>`;
+          }
+          if (n.isSoulCore && brainData) {
+            html += `<div style="color:var(--text2);margin-top:4px;font-size:12px">${brainData.engines?.length || 0} engines | ${brainData.memories?.length || 0} memories | ${brainData.knowledge?.length || 0} knowledge</div>`;
+          }
           tip.innerHTML = html;
         } else { tip.style.display = 'none'; }
         c.style.cursor = hoveredNode ? 'pointer' : 'grab';
@@ -504,25 +546,52 @@
           return {x:W/2+x1*s, y:H/2+y1*s, s, z:z2, node:n, match};
         }).sort((a,b)=>a.z-b.z);
 
-        // Draw connections
-        ctx.lineWidth=0.5;
-        for(let i=0;i<brainProj.length;i++) {
-          const a=brainProj[i];
-          // Soul children connect to core
-          if ((a.node.isChild) && brainProj[0]) {
-            const core = brainProj.find(p => p.node.isSoulCore);
-            if (core) {
-              ctx.strokeStyle = 'rgba(255,107,157,0.3)'; ctx.lineWidth = 1.5;
-              ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(core.x,core.y); ctx.stroke();
-              ctx.lineWidth = 0.5;
+        // Draw connections — real relationships, not random proximity
+        const coreProj = brainProj.find(p => p.node.isSoulCore);
+        const engineProjs = new Map(); // engineId → projected node
+        for (const p of brainProj) {
+          if (p.node.isEngine) engineProjs.set(p.node.engineId, p);
+        }
+
+        ctx.lineWidth = 0.5;
+        for (const p of brainProj) {
+          const n = p.node;
+
+          // Engine → Core connection (thick, colored)
+          if (n.isEngine && coreProj) {
+            ctx.strokeStyle = hexToRgba(n.color || '#7c3aed', 0.19);
+            ctx.lineWidth = 1.5;
+            ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(coreProj.x, coreProj.y); ctx.stroke();
+            ctx.lineWidth = 0.5;
+          }
+
+          // Tool → its Engine connection (thin, colored)
+          if (n.isTool && n.engineId) {
+            const eng = engineProjs.get(n.engineId);
+            if (eng) {
+              const dimSearch = brainSearchTerm && !p.match;
+              ctx.strokeStyle = dimSearch ? 'rgba(60,60,80,0.03)' : hexToRgba(n.color || '#555', 0.09);
+              ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(eng.x, eng.y); ctx.stroke();
             }
           }
-          for(let j=i+1;j<Math.min(i+6,brainProj.length);j++) {
-            const b=brainProj[j],dx=a.x-b.x,dy=a.y-b.y;
-            if(dx*dx+dy*dy < 12000*sc) {
-              const bothMatch = brainSearchTerm && a.match && b.match;
-              ctx.strokeStyle = bothMatch ? 'rgba(124,58,237,0.35)' : 'rgba(124,58,237,0.05)';
-              ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+
+          // Soul children → Core
+          if (n.isChild && coreProj) {
+            ctx.strokeStyle = 'rgba(255,107,157,0.3)'; ctx.lineWidth = 1.5;
+            ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(coreProj.x, coreProj.y); ctx.stroke();
+            ctx.lineWidth = 0.5;
+          }
+
+          // Search match connections
+          if (brainSearchTerm && p.match) {
+            for (const q of brainProj) {
+              if (q !== p && q.match) {
+                const dx = p.x-q.x, dy = p.y-q.y;
+                if (dx*dx+dy*dy < 40000*sc) {
+                  ctx.strokeStyle = 'rgba(124,58,237,0.3)';
+                  ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke();
+                }
+              }
             }
           }
         }
@@ -535,7 +604,7 @@
           const baseR = n.size * p.s;
           const r = baseR * (1 + 0.15*Math.sin(n.p + t));
           const isMatch = p.match;
-          const color = BRAIN_COLORS[n.type] || '#888';
+          const color = n.color || '#888';
 
           // Dimming for search
           ctx.globalAlpha = dimmed ? (isMatch ? 1 : 0.06) : (0.3+0.6*p.s);
@@ -564,10 +633,40 @@
             continue;
           }
 
+          // Special rendering for Engine nodes (hexagonal glow)
+          if (n.isEngine) {
+            ctx.globalAlpha = dimmed ? (isMatch ? 1 : 0.15) : 0.9;
+            // Outer glow
+            const eGrad = ctx.createRadialGradient(p.x, p.y, r*0.3, p.x, p.y, r*2);
+            eGrad.addColorStop(0, hexToRgba(color, 0.67));
+            eGrad.addColorStop(1, hexToRgba(color, 0));
+            ctx.beginPath(); ctx.arc(p.x, p.y, r*2, 0, 6.28);
+            ctx.fillStyle = eGrad; ctx.fill();
+            // Core diamond shape
+            ctx.beginPath();
+            ctx.moveTo(p.x, p.y - r); ctx.lineTo(p.x + r*0.87, p.y - r*0.5);
+            ctx.lineTo(p.x + r*0.87, p.y + r*0.5); ctx.lineTo(p.x, p.y + r);
+            ctx.lineTo(p.x - r*0.87, p.y + r*0.5); ctx.lineTo(p.x - r*0.87, p.y - r*0.5);
+            ctx.closePath();
+            ctx.fillStyle = color; ctx.fill();
+            ctx.strokeStyle = '#fff'; ctx.lineWidth = 0.5; ctx.globalAlpha = 0.4; ctx.stroke();
+            ctx.globalAlpha = 1;
+            // Label
+            if (p.s > 0.4) {
+              const engName = n.label.split(' Engine')[0].split(' — ')[0];
+              ctx.fillStyle = '#fff'; ctx.font = 'bold '+Math.max(10, 12*p.s)+'px Segoe UI';
+              ctx.textAlign = 'center';
+              ctx.globalAlpha = dimmed ? (isMatch ? 1 : 0.1) : Math.min(1, p.s);
+              ctx.fillText(engName, p.x, p.y + r + 14*p.s);
+              ctx.textAlign = 'left';
+            }
+            ctx.globalAlpha = 1;
+            continue;
+          }
+
           // Special rendering for Soul Children
           if (n.isChild) {
             ctx.globalAlpha = dimmed ? (isMatch ? 1 : 0.15) : 1;
-            // Glow
             ctx.shadowColor = color; ctx.shadowBlur = 10;
             ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, 6.28);
             ctx.fillStyle = color; ctx.fill();
@@ -575,7 +674,6 @@
             ctx.beginPath(); ctx.arc(p.x, p.y, r*0.4, 0, 6.28);
             ctx.fillStyle = '#fff'; ctx.globalAlpha = 0.5; ctx.fill();
             ctx.globalAlpha = 1;
-            // Name label (always show)
             const childName = n.label.split(' (')[0];
             ctx.fillStyle = '#fff'; ctx.font = 'bold '+Math.max(11, 13*p.s)+'px Segoe UI';
             ctx.textAlign = 'center';
@@ -619,33 +717,62 @@
           ctx.globalAlpha = 1;
         }
 
-        // Legend
+        // Legend — show real engines (top 12 by tool count) + special types
         ctx.textAlign = 'left';
-        const legendFontSize = Math.max(11, Math.min(14, 13*sc));
+        const legendFontSize = Math.max(10, Math.min(13, 12*sc));
         ctx.font = legendFontSize + 'px Segoe UI';
-        let ly = 28;
-        for(const[tp,co] of Object.entries(BRAIN_COLORS)) {
-          ctx.globalAlpha = dimmed && !brainSearchTerm.includes(tp) ? 0.25 : 0.9;
-          ctx.fillStyle = co;
-          ctx.beginPath(); ctx.arc(22, ly-2, 5, 0, 6.28); ctx.fill();
+        let ly = 24;
+
+        // Soul core
+        ctx.globalAlpha = 0.9;
+        ctx.fillStyle = '#a78bfa';
+        ctx.beginPath(); ctx.arc(20, ly-2, 5, 0, 6.28); ctx.fill();
+        ctx.fillStyle = '#aaa';
+        ctx.fillText('Soul Core', 32, ly+3); ly += 17;
+
+        // Top engines by size
+        const engSorted = (brainData?.engines || []).slice().sort((a,b) => b.toolCount - a.toolCount).slice(0, 12);
+        for (const eng of engSorted) {
+          ctx.globalAlpha = dimmed && !brainSearchTerm.includes(eng.id) ? 0.2 : 0.8;
+          ctx.fillStyle = eng.color;
+          // Diamond shape for engine
+          ctx.beginPath(); ctx.moveTo(20, ly-5); ctx.lineTo(24, ly-1); ctx.lineTo(20, ly+3); ctx.lineTo(16, ly-1); ctx.closePath(); ctx.fill();
           ctx.fillStyle = '#888';
-          ctx.fillText(BRAIN_TYPE_LABELS[tp]||tp, 34, ly+3);
-          ly += 20;
+          ctx.fillText(`${eng.name} (${eng.toolCount})`, 32, ly+3);
+          ly += 16;
+        }
+        // Memory + Knowledge if present
+        if (brainData?.memories?.length > 0) {
+          ctx.globalAlpha = 0.7; ctx.fillStyle = '#3b82f6';
+          ctx.beginPath(); ctx.arc(20, ly-1, 4, 0, 6.28); ctx.fill();
+          ctx.fillStyle = '#888'; ctx.fillText(`Memories (${brainData.memories.length})`, 32, ly+3); ly += 16;
+        }
+        if (brainData?.knowledge?.length > 0) {
+          ctx.globalAlpha = 0.7; ctx.fillStyle = '#06b6d4';
+          ctx.beginPath(); ctx.arc(20, ly-1, 4, 0, 6.28); ctx.fill();
+          ctx.fillStyle = '#888'; ctx.fillText(`Knowledge (${brainData.knowledge.length})`, 32, ly+3); ly += 16;
+        }
+        if (brainData?.children?.length > 0) {
+          ctx.globalAlpha = 0.7; ctx.fillStyle = '#ff6b9d';
+          ctx.beginPath(); ctx.arc(20, ly-1, 4, 0, 6.28); ctx.fill();
+          ctx.fillStyle = '#888'; ctx.fillText(`Children (${brainData.children.length})`, 32, ly+3); ly += 16;
         }
         ctx.globalAlpha = 1;
 
-        // Node count
-        ctx.fillStyle = 'rgba(255,255,255,0.3)'; ctx.font = '11px Segoe UI';
-        ctx.fillText(brainNodes.length + ' nodes', 16, ly + 8);
+        // Node count — top right
+        ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.font = 'bold 13px Segoe UI';
+        ctx.textAlign = 'right';
+        const totalTools = brainData?.totalTools || 0;
+        const totalEngines = brainData?.engines?.length || 0;
+        ctx.fillText(`${totalTools} tools | ${totalEngines} engines | ${brainNodes.length} nodes`, W-16, 24);
 
         // Search match count
         if (dimmed) {
           const matchCount = brainProj.filter(p => p.match).length;
           ctx.fillStyle = '#fff'; ctx.font = '13px Segoe UI';
-          ctx.textAlign = 'right';
-          ctx.fillText(matchCount + ' match' + (matchCount!==1?'es':''), W-16, 28);
-          ctx.textAlign = 'left';
+          ctx.fillText(matchCount + ' match' + (matchCount!==1?'es':''), W-16, 44);
         }
+        ctx.textAlign = 'left';
 
         // Zoom indicator
         if (brainScale !== 1) {

@@ -1,6 +1,6 @@
 {
   "name": "soul-ai",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Soul — AI Companion with loyalty, memory, and wisdom. Local-first, privacy-focused, works with Ollama (free) or any LLM API.",
   "main": "dist/index.js",
   "directories": {
@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "tsx src/index.ts",
     "dev:server": "tsx src/server.ts",
-    "build": "tsc && node -e \"const fs=require('fs');const p=require('path');const s=p.join('src','web');const d=p.join('dist','web');fs.mkdirSync(d,{recursive:true});fs.readdirSync(s).forEach(f=>fs.copyFileSync(p.join(s,f),p.join(d,f)))\"",
+    "build": "tsc && node -e \"const fs=require('fs');const p=require('path');const s=p.join('src','web');const d=p.join('dist','web');fs.mkdirSync(d,{recursive:true});fs.readdirSync(s).forEach(f=>fs.copyFileSync(p.join(s,f),p.join(d,f)));const cSrc=p.join('src','core','tool-catalog.json');const cDst=p.join('dist','core','tool-catalog.json');if(fs.existsSync(cSrc))fs.copyFileSync(cSrc,cDst)\"",
     "test": "vitest run",
     "start": "node dist/index.js",
     "start:server": "node dist/server.js",

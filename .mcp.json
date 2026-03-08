@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "soul": {
+      "command": "node",
+      "args": ["D:/Programer Project/soul/dist/index.js"]
+    }
+  }
+}

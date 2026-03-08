@@ -1,0 +1,578 @@
+{
+  "version": "1.4.0",
+  "totalTools": 302,
+  "engines": {
+    "autonomy": {
+      "name": "Autonomy",
+      "color": "#14b8a6",
+      "tools": [
+        "soul_task_create",
+        "soul_task_update",
+        "soul_tasks",
+        "soul_remind",
+        "soul_reminders",
+        "soul_learn_style",
+        "soul_style_guide",
+        "soul_handoff",
+        "soul_resume"
+      ]
+    },
+    "awareness": {
+      "name": "Awareness",
+      "color": "#6366f1",
+      "tools": [
+        "soul_introspect",
+        "soul_ethics",
+        "soul_metacognize",
+        "soul_anticipate",
+        "soul_context_check"
+      ]
+    },
+    "brain_hub": {
+      "name": "Brain Hub",
+      "color": "#a78bfa",
+      "tools": [
+        "soul_mode",
+        "soul_config_set",
+        "soul_brain_create",
+        "soul_brain_import",
+        "soul_brain_import_json",
+        "soul_brain_starter",
+        "soul_brain_list",
+        "soul_brain_toggle",
+        "soul_brain_uninstall",
+        "soul_brain_files",
+        "soul_brain_hub_stats"
+      ]
+    },
+    "channels": {
+      "name": "Channels",
+      "color": "#2dd4bf",
+      "tools": [
+        "soul_channel_add",
+        "soul_channels",
+        "soul_send",
+        "soul_messages"
+      ]
+    },
+    "classification": {
+      "name": "Classification",
+      "color": "#f472b6",
+      "tools": [
+        "soul_team_add",
+        "soul_team_list",
+        "soul_team_auth",
+        "soul_team_update",
+        "soul_classify",
+        "soul_classify_check",
+        "soul_classify_auto",
+        "soul_compartment_create",
+        "soul_compartment_add_member",
+        "soul_compartments",
+        "soul_audit",
+        "soul_classify_dashboard",
+        "soul_classify_teach",
+        "soul_classify_feedback",
+        "soul_classify_smart",
+        "soul_classify_patterns",
+        "soul_classify_forget",
+        "soul_classify_learning_stats"
+      ]
+    },
+    "code_intelligence": {
+      "name": "Code Intel",
+      "color": "#f97316",
+      "tools": [
+        "soul_snippet_save",
+        "soul_snippet_find",
+        "soul_snippet_use",
+        "soul_template_save",
+        "soul_templates",
+        "soul_code_pattern",
+        "soul_code_patterns",
+        "soul_recommend_stack",
+        "soul_code_stats"
+      ]
+    },
+    "collab": {
+      "name": "Collaboration",
+      "color": "#f59e0b",
+      "tools": [
+        "soul_share",
+        "soul_collab",
+        "soul_collab_result",
+        "soul_collective"
+      ]
+    },
+    "conversation": {
+      "name": "Conversation",
+      "color": "#38bdf8",
+      "tools": [
+        "soul_conversation_log",
+        "soul_conversation_history",
+        "soul_recall_context",
+        "soul_conversation_stats"
+      ]
+    },
+    "coworker": {
+      "name": "Coworker",
+      "color": "#f59e0b",
+      "tools": [
+        "soul_assign",
+        "soul_auto_assign",
+        "soul_work_start",
+        "soul_work_submit",
+        "soul_work_approve",
+        "soul_share_finding",
+        "soul_coworker_status",
+        "soul_team",
+        "soul_work_history",
+        "soul_team_activity",
+        "soul_expertise"
+      ]
+    },
+    "creative": {
+      "name": "Creative",
+      "color": "#eab308",
+      "tools": [
+        "soul_write",
+        "soul_write_update",
+        "soul_writings",
+        "soul_teach_me",
+        "soul_feel",
+        "soul_communicate"
+      ]
+    },
+    "daily_digest": {
+      "name": "Daily Digest",
+      "color": "#84cc16",
+      "tools": [
+        "soul_digest",
+        "soul_weekly"
+      ]
+    },
+    "deep_research": {
+      "name": "Deep Research",
+      "color": "#8b5cf6",
+      "tools": [
+        "soul_deep_research",
+        "soul_research_finding",
+        "soul_research_synthesize",
+        "soul_research_status",
+        "soul_research_list"
+      ]
+    },
+    "distillation": {
+      "name": "Distillation",
+      "color": "#67e8f9",
+      "tools": [
+        "soul_distill_collect",
+        "soul_distill_rate",
+        "soul_distill_export",
+        "soul_distill_stats",
+        "soul_distill_review",
+        "soul_distill_prune"
+      ]
+    },
+    "emotional": {
+      "name": "Emotional",
+      "color": "#e879f9",
+      "tools": [
+        "soul_mood",
+        "soul_detect_emotion",
+        "soul_mood_history",
+        "soul_mood_analysis"
+      ]
+    },
+    "family": {
+      "name": "Soul Family",
+      "color": "#ff6b9d",
+      "tools": [
+        "soul_spawn",
+        "soul_child",
+        "soul_family",
+        "soul_family_tree",
+        "soul_evolve",
+        "soul_fuse",
+        "soul_fusion_check",
+        "soul_as",
+        "soul_retire",
+        "soul_ask_help",
+        "soul_team_roster"
+      ]
+    },
+    "feedback_loop": {
+      "name": "Feedback",
+      "color": "#4ade80",
+      "tools": [
+        "soul_feedback",
+        "soul_feedback_patterns",
+        "soul_feedback_stats"
+      ]
+    },
+    "file_system": {
+      "name": "File System",
+      "color": "#64748b",
+      "tools": [
+        "soul_read_file",
+        "soul_list_dir",
+        "soul_search_files",
+        "soul_file_info",
+        "soul_read_csv",
+        "soul_analyze_project"
+      ]
+    },
+    "genius": {
+      "name": "Genius",
+      "color": "#a855f7",
+      "tools": [
+        "soul_genius_patterns",
+        "soul_genius_review_add",
+        "soul_genius_review_due",
+        "soul_genius_review_done",
+        "soul_genius_question",
+        "soul_genius_map",
+        "soul_genius_adjacent",
+        "soul_genius_compress",
+        "soul_genius_principles",
+        "soul_genius_thresholds",
+        "soul_genius_stuck",
+        "soul_genius_teach",
+        "soul_genius_session_start",
+        "soul_genius_session_end",
+        "soul_genius_dashboard"
+      ]
+    },
+    "goal_autopilot": {
+      "name": "Goals",
+      "color": "#f43f5e",
+      "tools": [
+        "soul_autopilot",
+        "soul_goal_progress",
+        "soul_goal_next",
+        "soul_goal_block",
+        "soul_goal_detail",
+        "soul_goals",
+        "soul_goal_milestone"
+      ]
+    },
+    "hardware": {
+      "name": "Hardware",
+      "color": "#94a3b8",
+      "tools": [
+        "soul_hw_scan",
+        "soul_hw_recommend",
+        "soul_hw_updates",
+        "soul_hw_catalog",
+        "soul_hw_profiles",
+        "soul_hw_budget",
+        "soul_gpu_setup",
+        "soul_ollama_perf",
+        "soul_optimize_ollama"
+      ]
+    },
+    "knowledge": {
+      "name": "Knowledge",
+      "color": "#06b6d4",
+      "tools": [
+        "soul_know",
+        "soul_knowledge",
+        "soul_knowledge_use",
+        "soul_knowledge_stats"
+      ]
+    },
+    "learning_paths": {
+      "name": "Learning",
+      "color": "#84cc16",
+      "tools": [
+        "soul_learn_path_create",
+        "soul_learn_paths",
+        "soul_learn_milestone_done",
+        "soul_learn_milestone_add",
+        "soul_learn_resource_add"
+      ]
+    },
+    "life": {
+      "name": "Life",
+      "color": "#ef4444",
+      "tools": [
+        "soul_goal",
+        "soul_goal_update",
+        "soul_goals",
+        "soul_reflect_daily",
+        "soul_reflections",
+        "soul_habit",
+        "soul_habit_done",
+        "soul_habits",
+        "soul_motivate",
+        "soul_advice"
+      ]
+    },
+    "llm": {
+      "name": "LLM Router",
+      "color": "#7c3aed",
+      "tools": [
+        "soul_llm_add",
+        "soul_llm_list",
+        "soul_llm_default",
+        "soul_llm_models",
+        "soul_llm_chat",
+        "soul_llm_usage",
+        "soul_llm_custom",
+        "soul_llm_remove",
+        "soul_agent",
+        "soul_agent_sessions",
+        "soul_token_savings",
+        "soul_cache_clean",
+        "soul_smart_chat",
+        "soul_route_explain",
+        "soul_route_test"
+      ]
+    },
+    "media_creator": {
+      "name": "Media Creator",
+      "color": "#fb923c",
+      "tools": [
+        "soul_create_document",
+        "soul_create_chart",
+        "soul_create_diagram",
+        "soul_create_report",
+        "soul_create_dashboard",
+        "soul_create_mermaid",
+        "soul_create_badge",
+        "soul_create_animated_chart",
+        "soul_create_loading",
+        "soul_create_presentation",
+        "soul_create_infographic",
+        "soul_create_timeline"
+      ]
+    },
+    "meta_intelligence": {
+      "name": "Meta Intel",
+      "color": "#8b5cf6",
+      "tools": [
+        "soul_prime",
+        "soul_reason",
+        "soul_explain",
+        "soul_growth_add",
+        "soul_growth",
+        "soul_growth_summary",
+        "soul_self_review"
+      ]
+    },
+    "multimodal": {
+      "name": "Multimodal",
+      "color": "#facc15",
+      "tools": [
+        "soul_read_url",
+        "soul_see",
+        "soul_listen",
+        "soul_read_doc"
+      ]
+    },
+    "network": {
+      "name": "Network",
+      "color": "#38bdf8",
+      "tools": [
+        "soul_network_share",
+        "soul_network_peer",
+        "soul_network_peers",
+        "soul_network_knowledge",
+        "soul_network_vote"
+      ]
+    },
+    "notification": {
+      "name": "Notification",
+      "color": "#c084fc",
+      "tools": [
+        "soul_notify",
+        "soul_notifications",
+        "soul_notify_read"
+      ]
+    },
+    "people": {
+      "name": "People",
+      "color": "#ec4899",
+      "tools": [
+        "soul_person_add",
+        "soul_person_find",
+        "soul_people",
+        "soul_person_update",
+        "soul_people_stats"
+      ]
+    },
+    "prompt_library": {
+      "name": "Prompts",
+      "color": "#fbbf24",
+      "tools": [
+        "soul_prompt_save",
+        "soul_prompt_use",
+        "soul_prompt_rate",
+        "soul_prompt_evolve",
+        "soul_prompts",
+        "soul_prompt_search",
+        "soul_prompt_delete"
+      ]
+    },
+    "quick_capture": {
+      "name": "Quick Capture",
+      "color": "#bef264",
+      "tools": [
+        "soul_note",
+        "soul_idea",
+        "soul_bookmark",
+        "soul_notes",
+        "soul_note_pin",
+        "soul_note_delete",
+        "soul_note_search"
+      ]
+    },
+    "research_engine": {
+      "name": "Research Engine",
+      "color": "#34d399",
+      "tools": [
+        "soul_learn_youtube",
+        "soul_learn_web",
+        "soul_learn_github",
+        "soul_trending",
+        "soul_research_multi"
+      ]
+    },
+    "research": {
+      "name": "Research",
+      "color": "#8b5cf6",
+      "tools": [
+        "soul_research",
+        "soul_learn_from_url",
+        "soul_learn_from_media",
+        "soul_create_skill",
+        "soul_evolve_skill",
+        "soul_update_knowledge"
+      ]
+    },
+    "scheduler": {
+      "name": "Scheduler",
+      "color": "#0ea5e9",
+      "tools": [
+        "soul_job_create",
+        "soul_jobs",
+        "soul_job_toggle",
+        "soul_briefing",
+        "soul_health",
+        "soul_quality",
+        "soul_quality_trend",
+        "soul_consolidate"
+      ]
+    },
+    "self_improve": {
+      "name": "Self Improve",
+      "color": "#10b981",
+      "tools": [
+        "soul_mistake",
+        "soul_check_mistakes",
+        "soul_preference",
+        "soul_know_master",
+        "soul_suggest",
+        "soul_context"
+      ]
+    },
+    "skill_executor": {
+      "name": "Skills",
+      "color": "#fb7185",
+      "tools": [
+        "soul_skill_create",
+        "soul_skill_approve",
+        "soul_skill_evolve",
+        "soul_skill_list",
+        "soul_skill_history"
+      ]
+    },
+    "sync": {
+      "name": "Sync",
+      "color": "#818cf8",
+      "tools": [
+        "soul_export",
+        "soul_import",
+        "soul_sync_status"
+      ]
+    },
+    "thinking": {
+      "name": "Thinking",
+      "color": "#22c55e",
+      "tools": [
+        "soul_think_framework",
+        "soul_frameworks",
+        "soul_brainstorm",
+        "soul_decompose",
+        "soul_evaluate",
+        "soul_decide",
+        "soul_decision_outcome",
+        "soul_decisions"
+      ]
+    },
+    "time_tracking": {
+      "name": "Time",
+      "color": "#10b981",
+      "tools": [
+        "soul_timer_start",
+        "soul_timer_stop",
+        "soul_timer_status",
+        "soul_time_today",
+        "soul_time_summary"
+      ]
+    },
+    "video_creator": {
+      "name": "Video",
+      "color": "#fca5a1",
+      "tools": [
+        "soul_create_video",
+        "soul_create_text_animation",
+        "soul_create_countdown",
+        "soul_create_particles"
+      ]
+    },
+    "web_safety": {
+      "name": "Web Safety",
+      "color": "#facc15",
+      "tools": [
+        "soul_url_check",
+        "soul_block_domain",
+        "soul_safety_stats"
+      ]
+    },
+    "web_search": {
+      "name": "Web Search",
+      "color": "#34d399",
+      "tools": [
+        "soul_web_search",
+        "soul_web_fetch",
+        "soul_web_search_deep",
+        "soul_search_provider_add",
+        "soul_search_providers"
+      ]
+    },
+    "workflow": {
+      "name": "Workflow",
+      "color": "#0ea5e9",
+      "tools": [
+        "soul_workflow_create",
+        "soul_workflow_run",
+        "soul_workflow_step",
+        "soul_workflow_done",
+        "soul_workflows",
+        "soul_workflow_template",
+        "soul_workflow_history",
+        "soul_workflow_delete"
+      ]
+    },
+    "ws_notifications": {
+      "name": "WebSocket",
+      "color": "#c084fc",
+      "tools": [
+        "soul_ws_broadcast",
+        "soul_ws_send",
+        "soul_ws_clients"
+      ]
+    }
+  }
+}
