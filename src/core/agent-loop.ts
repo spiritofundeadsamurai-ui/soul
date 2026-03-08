@@ -265,13 +265,21 @@ export async function runAgentLoop(
     });
   }
 
-  // Add context from memory
+  // Add context from memory (global — spans all sessions)
   try {
     const { search } = await import("../memory/memory-engine.js");
     const memories = await search(sanitizedMessage, 3);
     if (memories.length > 0) {
       const ctx = memories.map((m: any) => `[Memory] ${m.content}`).join("\n");
       messages.push({ role: "system", content: `Relevant memories:\n${ctx}` });
+    }
+  } catch { /* ok */ }
+
+  // Cross-session intelligence — search OTHER sessions for relevant context
+  try {
+    const crossCtx = searchCrossSessionContext(sanitizedMessage, options?.history?.[0]?.content);
+    if (crossCtx) {
+      messages.push({ role: "system", content: crossCtx });
     }
   } catch { /* ok */ }
 
@@ -2911,4 +2919,148 @@ export function listSessions(limit: number = 10): Array<{ sessionId: string; mes
     messageCount: r.cnt,
     lastMessage: r.last_at,
   }));
+}
+
+// ─── Cross-Session Intelligence ───
+// Search ALL past sessions for relevant context so Soul can learn across conversations
+
+function searchCrossSessionContext(message: string, currentSessionFirstMsg?: string): string | null {
+  try {
+    const rawDb = getRawDb();
+    ensureConversationTable();
+    ensureSessionInsightsTable();
+
+    // 1. Search session insights (auto-extracted learnings from past sessions)
+    const insights = rawDb.prepare(`
+      SELECT topic, insight, skills_used, session_id
+      FROM soul_session_insights
+      ORDER BY created_at DESC
+      LIMIT 50
+    `).all() as any[];
+
+    if (insights.length === 0) return null;
+
+    // Simple keyword matching to find relevant past insights
+    const lower = message.toLowerCase();
+    const words = lower.split(/\s+/).filter(w => w.length > 2);
+
+    const relevant: string[] = [];
+    for (const ins of insights) {
+      const combined = `${ins.topic} ${ins.insight} ${ins.skills_used || ""}`.toLowerCase();
+      let score = 0;
+      for (const w of words) {
+        if (combined.includes(w)) score++;
+      }
+      if (score >= 2 || (words.length <= 3 && score >= 1)) {
+        relevant.push(`- [${ins.topic}]: ${ins.insight}${ins.skills_used ? ` (tools: ${ins.skills_used})` : ""}`);
+      }
+      if (relevant.length >= 5) break;
+    }
+
+    if (relevant.length === 0) return null;
+
+    return `Cross-session knowledge (from previous conversations):\n${relevant.join("\n")}\n\nUse this knowledge when relevant to the current conversation.`;
+  } catch {
+    return null;
+  }
+}
+
+function ensureSessionInsightsTable() {
+  const rawDb = getRawDb();
+  rawDb.exec(`
+    CREATE TABLE IF NOT EXISTS soul_session_insights (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL,
+      topic TEXT NOT NULL,
+      insight TEXT NOT NULL,
+      skills_used TEXT,
+      message_count INTEGER DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+}
+
+/**
+ * Extract insights from a session after it ends or periodically.
+ * Called when session changes or on /new command.
+ */
+export function extractSessionInsights(sessionId: string) {
+  try {
+    const rawDb = getRawDb();
+    ensureConversationTable();
+    ensureSessionInsightsTable();
+
+    // Check if already extracted
+    const existing = rawDb.prepare(
+      "SELECT COUNT(*) as cnt FROM soul_session_insights WHERE session_id = ?"
+    ).get(sessionId) as any;
+    if (existing?.cnt > 0) return;
+
+    // Get session messages
+    const messages = rawDb.prepare(
+      "SELECT role, content FROM soul_agent_conversations WHERE session_id = ? ORDER BY id ASC LIMIT 100"
+    ).all(sessionId) as any[];
+
+    if (messages.length < 2) return; // Too short to extract
+
+    // Extract topic from first user message
+    const firstUser = messages.find((m: any) => m.role === "user");
+    const topic = firstUser
+      ? firstUser.content.substring(0, 100).replace(/\n/g, " ")
+      : "general conversation";
+
+    // Extract key insights:
+    // - What tools were mentioned/used
+    // - What the user asked about
+    // - What Soul taught or learned
+    const allContent = messages.map((m: any) => m.content).join(" ").toLowerCase();
+    const toolsMentioned = new Set<string>();
+    const toolPatterns = [
+      "soul_remember", "soul_search", "soul_goal", "soul_think",
+      "soul_write", "soul_code", "soul_research", "soul_web",
+      "soul_note", "soul_learn", "soul_workflow", "soul_autopilot",
+    ];
+    for (const t of toolPatterns) {
+      if (allContent.includes(t)) toolsMentioned.add(t);
+    }
+
+    // Summarize key Q&A pairs
+    const qaPairs: string[] = [];
+    for (let i = 0; i < messages.length - 1; i++) {
+      if (messages[i].role === "user" && messages[i + 1].role === "assistant") {
+        const q = messages[i].content.substring(0, 80);
+        const a = messages[i + 1].content.substring(0, 120);
+        qaPairs.push(`Q: ${q} → A: ${a}`);
+      }
+      if (qaPairs.length >= 3) break;
+    }
+
+    const insight = qaPairs.length > 0
+      ? qaPairs.join(" | ")
+      : `${messages.length} messages exchanged about: ${topic}`;
+
+    rawDb.prepare(`
+      INSERT INTO soul_session_insights (session_id, topic, insight, skills_used, message_count)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(
+      sessionId,
+      topic,
+      insight,
+      toolsMentioned.size > 0 ? Array.from(toolsMentioned).join(", ") : null,
+      messages.length,
+    );
+
+    // Also auto-remember key topics in global memory
+    try {
+      const { remember } = require("../memory/memory-engine.js");
+      if (messages.length >= 4) {
+        remember({
+          content: `Session insight: ${topic} — ${insight.substring(0, 200)}`,
+          type: "learning",
+          tags: ["cross-session", "auto-insight"],
+          source: `session:${sessionId}`,
+        });
+      }
+    } catch { /* ok */ }
+  } catch { /* ok */ }
 }

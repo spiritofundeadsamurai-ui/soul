@@ -24,6 +24,7 @@ import {
   saveConversationTurn,
   getConversationHistory,
   listSessions,
+  extractSessionInsights,
 } from "./core/agent-loop.js";
 import { getDefaultConfig, listConfiguredProviders, addProvider } from "./core/llm-connector.js";
 
@@ -210,14 +211,18 @@ async function main() {
       const result = handleCommand(input, sessionId, rl);
       if (result === "exit") {
         saveSessionId(sessionId);
+        if (turnCount > 0) extractSessionInsights(sessionId);
         soulSay(`See you next time! (${turnCount} turns this session)`);
         rl.close();
         process.exit(0);
       } else if (result === "new_session") {
+        // Extract insights from old session before switching
+        extractSessionInsights(sessionId);
         sessionId = randomUUID();
         saveSessionId(sessionId);
         turnCount = 0;
-        console.log(`\n${C.green}New session started: ${sessionId.split("-")[0]}${C.reset}\n`);
+        console.log(`\n${C.green}New session started: ${sessionId.split("-")[0]}${C.reset}`)
+        console.log(`${C.dim}  (Previous session insights saved — Soul carries knowledge forward)${C.reset}\n`);
         rl.prompt();
         return;
       }
@@ -246,6 +251,7 @@ async function main() {
 
   process.on("SIGINT", () => {
     saveSessionId(sessionId);
+    if (turnCount > 0) extractSessionInsights(sessionId);
     console.log("");
     soulSay(`See you! (session saved, ${turnCount} turns)`);
     process.exit(0);
