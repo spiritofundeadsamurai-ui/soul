@@ -12,6 +12,16 @@
 
 import { getRawDb } from "../db/index.js";
 import { remember } from "../memory/memory-engine.js";
+import { readFileSync } from "fs";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
+
+let SOUL_VERSION = "1.9.1";
+try {
+  const __dirname = dirname(fileURLToPath(import.meta.url));
+  const pkg = JSON.parse(readFileSync(join(__dirname, "..", "..", "package.json"), "utf-8"));
+  SOUL_VERSION = pkg.version || SOUL_VERSION;
+} catch { /* ok */ }
 
 export interface Channel {
   id: number;
@@ -484,7 +494,13 @@ async function pollTelegramLoop(
         try {
           const { runAgentLoop } = await import("./agent-loop.js");
           const result = await runAgentLoop(text, {
-            systemPrompt: `You are Soul, an AI companion responding via Telegram to ${fromName}. Keep responses concise and helpful. Use Thai if the user writes in Thai. NEVER output <think> tags or internal reasoning — only the final answer.`,
+            systemPrompt: `You are Soul v${SOUL_VERSION || "1.9.1"}, an AI companion responding via Telegram to ${fromName}.
+RULES:
+1. When user writes in Thai → ALWAYS reply in Thai. NEVER switch to English.
+2. Keep responses concise (1-3 paragraphs max).
+3. You have 308 tools — you CAN read files, manage things, search, remember, etc. NEVER say "ทำไม่ได้".
+4. NEVER output <think> tags, internal reasoning, or duplicate responses.
+5. Send ONE reply only. Do not repeat yourself.`,
             maxIterations: 5,
           });
           reply = result.reply || "ขอโทษครับ ไม่สามารถประมวลผลได้";
