@@ -354,6 +354,52 @@ async function tryAutoAction(
     }
   }
 
+  // ── Pattern: Direct path → list directory or read file ──
+  const pathMatch = message.match(/^([A-Z]:\\[^\n]+|\/[^\n]+)$/im) || message.match(/([A-Z]:\\(?:[^\\\/:*?"<>|\n]+\\)*[^\\\/:*?"<>|\n]+)/);
+  if (pathMatch) {
+    const targetPath = pathMatch[1].trim();
+    try {
+      const fs = await import("fs");
+      const fsSoul = await import("./file-system.js");
+      const stat = fs.statSync(targetPath);
+      if (stat.isDirectory()) {
+        const entries = fsSoul.listDir(targetPath);
+        const listing = entries.slice(0, 30).map((e: any) =>
+          `${e.isDirectory ? "📁" : "📄"} ${e.name}${e.isDirectory ? "/" : ""} ${e.size || ""}`
+        ).join("\n");
+        const total = entries.length;
+        return {
+          reply: `📂 **${targetPath}**\n\n${listing}${total > 30 ? `\n\n...และอีก ${total - 30} รายการ` : ""}\n\nต้องการให้ทำอะไรกับไฟล์เหล่านี้ครับ?`,
+          toolsUsed: ["soul_list_dir"],
+          iterations: 1,
+          totalTokens: 0,
+          model: "auto-action",
+          provider: "soul-auto",
+          confidence: { overall: 95, label: "very high", emoji: "🟢" },
+          responseMs: Date.now() - startTimeMs,
+        };
+      } else {
+        // It's a file — read it
+        const content = fsSoul.readFile(targetPath) as any;
+        const contentStr = typeof content === "string" ? content : JSON.stringify(content, null, 2);
+        const preview = contentStr.substring(0, 2000);
+        return {
+          reply: `📄 **${targetPath}**\n\n\`\`\`\n${preview}\n\`\`\`${contentStr.length > 2000 ? "\n\n...(ตัดมาแค่ 2000 ตัวอักษรแรก)" : ""}`,
+          toolsUsed: ["soul_read_file"],
+          iterations: 1,
+          totalTokens: 0,
+          model: "auto-action",
+          provider: "soul-auto",
+          confidence: { overall: 95, label: "very high", emoji: "🟢" },
+          responseMs: Date.now() - startTimeMs,
+        };
+      }
+    } catch (err: any) {
+      // Don't return error — let LLM handle it with context
+      // But inject helpful info into the message for LLM
+    }
+  }
+
   // ── Pattern: Version query ──
   if (/version|เวอร์ชัน|เวอชัน|เวอร์ชั่น/i.test(lower) && /soul|ตัวเอง|คุณ/i.test(lower)) {
     return {
