@@ -71,7 +71,7 @@ const CATEGORY_KEYWORDS: Record<string, string[]> = {
   network: ["network", "share", "peer", "vote", "เครือข่าย"],
   sync: ["sync", "device", "backup", "ซิงค์"],
   scheduler: ["schedule", "cron", "briefing", "health check", "ตาราง"],
-  channel: ["telegram", "discord", "send message", "channel", "ช่อง"],
+  channel: ["telegram", "discord", "send message", "channel", "ช่อง", "connect", "เชื่อมต่อ", "bot token", "webhook", "update soul", "อัพเดต", "self-update"],
   notification: ["notify", "notification", "alert", "แจ้งเตือน"],
   multimodal: ["image", "audio", "document", "see", "listen", "read doc", "รูป", "เสียง"],
   skill: ["skill", "execute", "approve", "ทักษะ"],

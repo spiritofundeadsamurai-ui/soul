@@ -58,7 +58,7 @@ async function main() {
   // Create MCP server
   const server = new McpServer({
     name: "soul",
-    version: "1.7.0",
+    version: "1.8.0",
   });
 
   // Register all tools

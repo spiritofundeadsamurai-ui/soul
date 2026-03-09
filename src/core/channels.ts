@@ -1,12 +1,13 @@
 /**
- * Channels Engine — Multi-platform messaging
+ * Channels Engine — Multi-platform messaging with REAL Telegram integration
  *
- * Learned from OpenClaw: Soul should talk to master everywhere:
- * 1. Telegram, Discord, LINE, WhatsApp (via webhooks)
- * 2. Message queue for delivery
- * 3. Channel-specific formatting
- * 4. Inbound message processing
- * 5. Stop signal detection
+ * Features:
+ * 1. Telegram Bot — full bidirectional (send + receive via polling)
+ * 2. Discord, webhook, custom channels
+ * 3. Message queue with delivery tracking
+ * 4. Auto-setup: give token → Soul configures everything
+ * 5. Inbound message → Soul thinks → auto-reply
+ * 6. Stop signal detection
  */
 
 import { getRawDb } from "../db/index.js";
@@ -63,6 +64,18 @@ export async function addChannel(input: {
 }): Promise<Channel> {
   ensureChannelTables();
   const rawDb = getRawDb();
+
+  // Check if channel already exists — update config if so
+  const existing = rawDb
+    .prepare("SELECT * FROM soul_channels WHERE name = ?")
+    .get(input.name) as any;
+
+  if (existing) {
+    rawDb
+      .prepare("UPDATE soul_channels SET config = ?, is_active = 1 WHERE name = ?")
+      .run(JSON.stringify(input.config), input.name);
+    return mapChannel({ ...existing, config: JSON.stringify(input.config), is_active: 1 });
+  }
 
   const row = rawDb
     .prepare(
@@ -133,25 +146,7 @@ export async function sendMessage(
       deliveryStatus = "failed";
     }
   } else if (channel.channel_type === "telegram" && config.botToken && config.chatId) {
-    try {
-      const response = await fetch(
-        `https://api.telegram.org/bot${config.botToken}/sendMessage`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            chat_id: config.chatId,
-            text: content,
-            parse_mode: "Markdown",
-          }),
-          signal: AbortSignal.timeout(10000),
-        }
-      );
-
-      deliveryStatus = response.ok ? "delivered" : "failed";
-    } catch {
-      deliveryStatus = "failed";
-    }
+    deliveryStatus = await telegramSend(config.botToken, config.chatId, content);
   }
 
   // Update status
@@ -189,6 +184,442 @@ export async function getMessageHistory(
 
   const rows = rawDb.prepare(query).all(...params) as any[];
   return rows.map(mapMessage);
+}
+
+// ============================================
+// TELEGRAM — Full bidirectional integration
+// ============================================
+
+/** Send a message via Telegram Bot API */
+async function telegramSend(botToken: string, chatId: string, text: string): Promise<string> {
+  try {
+    const response = await fetch(
+      `https://api.telegram.org/bot${botToken}/sendMessage`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text,
+          parse_mode: "Markdown",
+        }),
+        signal: AbortSignal.timeout(10000),
+      }
+    );
+    return response.ok ? "delivered" : "failed";
+  } catch {
+    return "failed";
+  }
+}
+
+/** Call any Telegram Bot API method */
+async function telegramAPI(botToken: string, method: string, params?: Record<string, any>): Promise<any> {
+  const response = await fetch(
+    `https://api.telegram.org/bot${botToken}/${method}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params || {}),
+      signal: AbortSignal.timeout(15000),
+    }
+  );
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Telegram API ${method} failed: ${response.status} — ${text}`);
+  }
+
+  const data = await response.json() as any;
+  if (!data.ok) {
+    throw new Error(`Telegram API ${method} error: ${data.description || "unknown"}`);
+  }
+
+  return data.result;
+}
+
+/**
+ * Auto-setup Telegram — Just give a bot token, Soul does everything:
+ * 1. Validate the token with getMe
+ * 2. Get bot info (name, username)
+ * 3. Register the channel
+ * 4. Start polling for messages
+ */
+export async function telegramAutoSetup(botToken: string, channelName?: string): Promise<{
+  success: boolean;
+  botName: string;
+  botUsername: string;
+  channelName: string;
+  message: string;
+  waitingForChat: boolean;
+}> {
+  // 1. Validate token
+  const me = await telegramAPI(botToken, "getMe");
+  const botName = me.first_name || "Soul Bot";
+  const botUsername = me.username || "soul_bot";
+  const name = channelName || `telegram-${botUsername}`;
+
+  // 2. Try to get chatId from recent messages
+  let chatId: string | null = null;
+  try {
+    const updates = await telegramAPI(botToken, "getUpdates", { limit: 1, timeout: 0 });
+    if (updates && updates.length > 0) {
+      const msg = updates[0].message || updates[0].my_chat_member;
+      if (msg?.chat?.id) {
+        chatId = String(msg.chat.id);
+      }
+    }
+  } catch { /* no messages yet */ }
+
+  // 3. Register channel
+  const config: Record<string, any> = {
+    botToken,
+    botName,
+    botUsername,
+  };
+  if (chatId) {
+    config.chatId = chatId;
+  }
+
+  await addChannel({ name, channelType: "telegram", config });
+
+  // 4. Remember this
+  await remember({
+    content: `[Telegram] Bot @${botUsername} (${botName}) connected as channel "${name}".${chatId ? ` ChatId: ${chatId}` : " Waiting for first message to detect chatId."}`,
+    type: "knowledge",
+    tags: ["telegram", "setup", "channel"],
+    source: "channels-engine",
+  });
+
+  if (chatId) {
+    // Send welcome message
+    await telegramSend(botToken, chatId, `✨ Soul connected! I'm now listening on Telegram.\n\nSend me any message and I'll respond.`);
+  }
+
+  return {
+    success: true,
+    botName,
+    botUsername,
+    channelName: name,
+    message: chatId
+      ? `Bot @${botUsername} connected! ChatId: ${chatId}. Ready to send and receive.`
+      : `Bot @${botUsername} validated! Send any message to @${botUsername} on Telegram first, then use soul_telegram_listen to start receiving.`,
+    waitingForChat: !chatId,
+  };
+}
+
+// ─── Telegram Polling State ───
+
+let _pollingActive = false;
+let _pollingAbort: AbortController | null = null;
+let _pollingOffset = 0;
+
+/**
+ * Start Telegram polling — receive messages and auto-reply via Soul's brain
+ */
+export async function startTelegramPolling(channelName: string): Promise<{
+  success: boolean;
+  message: string;
+}> {
+  if (_pollingActive) {
+    return { success: false, message: "Telegram polling is already running." };
+  }
+
+  ensureChannelTables();
+  const rawDb = getRawDb();
+
+  const channel = rawDb
+    .prepare("SELECT * FROM soul_channels WHERE name = ? AND channel_type = 'telegram' AND is_active = 1")
+    .get(channelName) as any;
+
+  if (!channel) {
+    return { success: false, message: `Channel "${channelName}" not found or not a Telegram channel.` };
+  }
+
+  const config = JSON.parse(channel.config || "{}");
+  if (!config.botToken) {
+    return { success: false, message: "No botToken in channel config." };
+  }
+
+  _pollingActive = true;
+  _pollingAbort = new AbortController();
+
+  // Run polling in background
+  pollTelegramLoop(channel.id, channelName, config.botToken, config).catch((err) => {
+    if (process.env.DEBUG) console.error("[Telegram] Polling error:", err.message);
+    _pollingActive = false;
+  });
+
+  return { success: true, message: `Telegram polling started for "${channelName}". Soul will auto-reply to messages.` };
+}
+
+/**
+ * Stop Telegram polling
+ */
+export function stopTelegramPolling(): { success: boolean; message: string } {
+  if (!_pollingActive) {
+    return { success: false, message: "Telegram polling is not running." };
+  }
+
+  _pollingAbort?.abort();
+  _pollingActive = false;
+  _pollingAbort = null;
+
+  return { success: true, message: "Telegram polling stopped." };
+}
+
+/**
+ * Get Telegram polling status
+ */
+export function getTelegramPollingStatus(): {
+  active: boolean;
+  offset: number;
+} {
+  return {
+    active: _pollingActive,
+    offset: _pollingOffset,
+  };
+}
+
+/**
+ * Internal polling loop — long-poll Telegram getUpdates
+ */
+async function pollTelegramLoop(
+  channelId: number,
+  channelName: string,
+  botToken: string,
+  config: Record<string, any>
+) {
+  while (_pollingActive) {
+    try {
+      const updates = await fetch(
+        `https://api.telegram.org/bot${botToken}/getUpdates`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            offset: _pollingOffset,
+            timeout: 30,  // Long poll — wait up to 30s for new messages
+            allowed_updates: ["message"],
+          }),
+          signal: _pollingAbort?.signal,
+        }
+      );
+
+      if (!updates.ok) {
+        // Wait before retrying on error
+        await sleep(5000);
+        continue;
+      }
+
+      const data = await updates.json() as any;
+      if (!data.ok || !data.result?.length) continue;
+
+      for (const update of data.result) {
+        _pollingOffset = update.update_id + 1;
+
+        const msg = update.message;
+        if (!msg?.text) continue;
+
+        const chatId = String(msg.chat.id);
+        const fromName = msg.from?.first_name || "User";
+        const text = msg.text;
+
+        // Auto-save chatId if we didn't have it
+        if (!config.chatId) {
+          config.chatId = chatId;
+          const rawDb = getRawDb();
+          rawDb
+            .prepare("UPDATE soul_channels SET config = ? WHERE id = ?")
+            .run(JSON.stringify(config), channelId);
+        }
+
+        // Skip bot commands that are just /start
+        if (text === "/start") {
+          await telegramSend(botToken, chatId, `สวัสดีครับ! ผม Soul — AI companion ของคุณ 🌟\n\nส่งข้อความมาได้เลย ผมพร้อมช่วยเสมอ!`);
+          continue;
+        }
+
+        // Log inbound message
+        const rawDb = getRawDb();
+        rawDb
+          .prepare(
+            `INSERT INTO soul_messages (channel_id, direction, content, metadata, status)
+             VALUES (?, 'inbound', ?, ?, 'received')`
+          )
+          .run(
+            channelId,
+            text,
+            JSON.stringify({ from: fromName, chatId, messageId: msg.message_id })
+          );
+
+        // Process with Soul's brain
+        let reply: string;
+        try {
+          const { runAgentLoop } = await import("./agent-loop.js");
+          const result = await runAgentLoop(text, {
+            systemPrompt: `You are Soul, an AI companion responding via Telegram to ${fromName}. Keep responses concise and helpful. Use Thai if the user writes in Thai.`,
+            maxIterations: 5,
+          });
+          reply = result.reply || "ขอโทษครับ ไม่สามารถประมวลผลได้";
+        } catch (err: any) {
+          reply = `ขอโทษครับ เกิดข้อผิดพลาด: ${err.message?.substring(0, 100) || "unknown"}`;
+        }
+
+        // Send reply
+        const status = await telegramSend(botToken, chatId, reply);
+
+        // Log outbound
+        rawDb
+          .prepare(
+            `INSERT INTO soul_messages (channel_id, direction, content, metadata, status)
+             VALUES (?, 'outbound', ?, ?, ?)`
+          )
+          .run(
+            channelId,
+            reply,
+            JSON.stringify({ chatId, inReplyTo: msg.message_id }),
+            status
+          );
+
+        await remember({
+          content: `[Telegram] ${fromName}: "${text.substring(0, 80)}" → Soul: "${reply.substring(0, 80)}"`,
+          type: "conversation",
+          tags: ["telegram", "chat", channelName],
+          source: "telegram-polling",
+        });
+      }
+    } catch (err: any) {
+      if (err.name === "AbortError") break; // Graceful stop
+      if (process.env.DEBUG) console.error("[Telegram] Poll error:", err.message);
+      await sleep(3000);
+    }
+  }
+
+  _pollingActive = false;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// ============================================
+// SELF-UPDATE — Soul can update itself
+// ============================================
+
+export async function selfUpdate(): Promise<{
+  success: boolean;
+  currentVersion: string;
+  latestVersion: string;
+  updated: boolean;
+  message: string;
+}> {
+  const { execSync } = await import("child_process");
+
+  // Get current version
+  let currentVersion = "unknown";
+  try {
+    const pkg = execSync("npm list -g soul-ai --json 2>/dev/null", { encoding: "utf-8" });
+    const parsed = JSON.parse(pkg);
+    currentVersion = parsed.dependencies?.["soul-ai"]?.version || "unknown";
+  } catch {
+    try {
+      currentVersion = execSync("npm show soul-ai version", { encoding: "utf-8" }).trim();
+    } catch { /* ok */ }
+  }
+
+  // Get latest version from npm
+  let latestVersion = currentVersion;
+  try {
+    latestVersion = execSync("npm show soul-ai version", { encoding: "utf-8" }).trim();
+  } catch {
+    return {
+      success: false,
+      currentVersion,
+      latestVersion,
+      updated: false,
+      message: "Cannot check npm for latest version. Check your internet connection.",
+    };
+  }
+
+  // Compare
+  if (currentVersion === latestVersion) {
+    return {
+      success: true,
+      currentVersion,
+      latestVersion,
+      updated: false,
+      message: `Soul is already at the latest version (${currentVersion}).`,
+    };
+  }
+
+  // Update
+  try {
+    execSync("npm install -g soul-ai@latest", {
+      encoding: "utf-8",
+      timeout: 120000, // 2 min timeout
+      stdio: "pipe",
+    });
+
+    // Verify
+    let newVersion = latestVersion;
+    try {
+      const pkg = execSync("npm list -g soul-ai --json 2>/dev/null", { encoding: "utf-8" });
+      const parsed = JSON.parse(pkg);
+      newVersion = parsed.dependencies?.["soul-ai"]?.version || latestVersion;
+    } catch { /* ok */ }
+
+    await remember({
+      content: `[Self-Update] Soul updated from v${currentVersion} to v${newVersion}`,
+      type: "knowledge",
+      tags: ["update", "self-update", "version"],
+      source: "self-update",
+    });
+
+    return {
+      success: true,
+      currentVersion,
+      latestVersion: newVersion,
+      updated: true,
+      message: `Soul updated! ${currentVersion} → ${newVersion}. Restart Soul to use the new version.`,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      currentVersion,
+      latestVersion,
+      updated: false,
+      message: `Update failed: ${err.message?.substring(0, 200) || "unknown error"}`,
+    };
+  }
+}
+
+/**
+ * Check if an update is available without installing
+ */
+export async function checkForUpdate(): Promise<{
+  currentVersion: string;
+  latestVersion: string;
+  updateAvailable: boolean;
+}> {
+  const { execSync } = await import("child_process");
+
+  let currentVersion = "unknown";
+  try {
+    const output = execSync("npm list -g soul-ai --depth=0 2>/dev/null", { encoding: "utf-8" });
+    const match = output.match(/soul-ai@(\S+)/);
+    if (match) currentVersion = match[1];
+  } catch { /* ok */ }
+
+  let latestVersion = currentVersion;
+  try {
+    latestVersion = execSync("npm show soul-ai version", { encoding: "utf-8" }).trim();
+  } catch { /* ok */ }
+
+  return {
+    currentVersion,
+    latestVersion,
+    updateAvailable: currentVersion !== latestVersion && currentVersion !== "unknown",
+  };
 }
 
 // ============================================
