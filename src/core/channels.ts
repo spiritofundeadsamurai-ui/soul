@@ -349,6 +349,9 @@ export async function telegramAutoSetup(botToken: string, channelName?: string):
 let _pollingActive = false;
 let _pollingAbort: AbortController | null = null;
 let _pollingOffset = 0;
+const _processedMessageIds = new Set<number>(); // Dedup: track processed message IDs
+const MAX_PROCESSED_IDS = 1000; // Prevent memory leak
+let _processingMessage = false; // Lock to prevent concurrent processing
 
 /**
  * Start Telegram polling — receive messages and auto-reply via Soul's brain
@@ -377,6 +380,24 @@ export async function startTelegramPolling(channelName: string): Promise<{
     return { success: false, message: "No botToken in channel config." };
   }
 
+  // DB-level lock: check if another process is polling
+  try {
+    rawDb.exec(`CREATE TABLE IF NOT EXISTS soul_polling_lock (
+      id INTEGER PRIMARY KEY DEFAULT 1,
+      pid INTEGER,
+      started_at TEXT,
+      UNIQUE(id)
+    )`);
+    const lock = rawDb.prepare("SELECT * FROM soul_polling_lock WHERE id = 1").get() as any;
+    if (lock) {
+      // Check if the process is still alive
+      try { process.kill(lock.pid, 0); /* process alive */
+        return { success: false, message: `Another Soul process (PID ${lock.pid}) is already polling. Stop it first.` };
+      } catch { /* process dead — take over */ }
+    }
+    rawDb.prepare("INSERT OR REPLACE INTO soul_polling_lock (id, pid, started_at) VALUES (1, ?, datetime('now'))").run(process.pid);
+  } catch { /* ok — proceed without lock */ }
+
   _pollingActive = true;
   _pollingAbort = new AbortController();
 
@@ -400,6 +421,12 @@ export function stopTelegramPolling(): { success: boolean; message: string } {
   _pollingAbort?.abort();
   _pollingActive = false;
   _pollingAbort = null;
+
+  // Release DB lock
+  try {
+    const rawDb = getRawDb();
+    rawDb.prepare("DELETE FROM soul_polling_lock WHERE pid = ?").run(process.pid);
+  } catch { /* ok */ }
 
   return { success: true, message: "Telegram polling stopped." };
 }
@@ -456,6 +483,20 @@ async function pollTelegramLoop(
 
         const msg = update.message;
         if (!msg?.text) continue;
+
+        // Dedup: skip already-processed messages
+        const msgId = msg.message_id;
+        if (_processedMessageIds.has(msgId)) continue;
+        _processedMessageIds.add(msgId);
+        // Prevent memory leak — trim old IDs
+        if (_processedMessageIds.size > MAX_PROCESSED_IDS) {
+          const ids = Array.from(_processedMessageIds);
+          ids.slice(0, ids.length - 500).forEach(id => _processedMessageIds.delete(id));
+        }
+
+        // Lock: wait if another message is being processed
+        if (_processingMessage) continue;
+        _processingMessage = true;
 
         const chatId = String(msg.chat.id);
         const fromName = msg.from?.first_name || "User";
@@ -534,8 +575,11 @@ RULES:
           tags: ["telegram", "chat", channelName],
           source: "telegram-polling",
         });
+
+        _processingMessage = false;
       }
     } catch (err: any) {
+      _processingMessage = false;
       if (err.name === "AbortError") break; // Graceful stop
       if (process.env.DEBUG) console.error("[Telegram] Poll error:", err.message);
       await sleep(3000);
