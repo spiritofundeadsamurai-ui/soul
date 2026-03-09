@@ -1,15 +1,17 @@
 #!/usr/bin/env node
 
 /**
- * Soul CLI — Standalone AI Agent (like Claude Code)
+ * Soul CLI — Interactive AI Companion Terminal (Claude Code-style UX)
  *
  * Features:
- *   - Multi-turn conversation with full context
- *   - Session persistence — resume previous conversations
- *   - Message queue — keep typing while Soul thinks, messages processed in order
- *   - Debounce — rapid Enter presses merge into one message
- *   - Conversation history flows to LLM every turn
- *   - /new to start fresh, /continue to resume last session
+ *   - Multi-line input: \ at end of line continues, or paste multi-line text
+ *   - Message queue: keep typing while Soul thinks
+ *   - Streaming responses with real-time token output
+ *   - Tool execution with live progress display
+ *   - Session persistence and resume
+ *   - Ctrl+C to interrupt generation or exit
+ *   - Tab completion for commands
+ *   - Visual input area with clear chat separation
  */
 
 import * as readline from "readline";
@@ -29,18 +31,37 @@ import {
 } from "./core/agent-loop.js";
 import { getDefaultConfig, listConfiguredProviders, addProvider } from "./core/llm-connector.js";
 
-// ─── Terminal Colors ───
+// ─── Terminal Colors & Styles ───
 
 const C = {
   reset: "\x1b[0m",
   bold: "\x1b[1m",
   dim: "\x1b[2m",
+  italic: "\x1b[3m",
+  underline: "\x1b[4m",
   red: "\x1b[31m",
   green: "\x1b[32m",
   yellow: "\x1b[33m",
   blue: "\x1b[34m",
   magenta: "\x1b[35m",
   cyan: "\x1b[36m",
+  white: "\x1b[37m",
+  bgDim: "\x1b[48;5;236m",
+  gray: "\x1b[90m",
+};
+
+// Box drawing characters
+const BOX = {
+  topLeft: "╭",
+  topRight: "╮",
+  bottomLeft: "╰",
+  bottomRight: "╯",
+  horizontal: "─",
+  vertical: "│",
+  thinH: "─",
+  dot: "●",
+  arrow: "❯",
+  arrowRight: "→",
 };
 
 const SOUL_DIR = path.join(os.homedir(), ".soul");
@@ -50,13 +71,18 @@ const SESSION_FILE = path.join(SOUL_DIR, "last-session.txt");
 
 let isProcessing = false;
 let turnCount = 0;
-let activeChildName: string | null = null; // null = Soul Core, string = talking to specific child
+let activeChildName: string | null = null;
+let abortController: AbortController | null = null;
 
 // Message queue + debounce
 const messageQueue: string[] = [];
 let debounceBuffer: string[] = [];
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-const DEBOUNCE_MS = 500; // 0.5s — fast debounce, don't delay user
+const DEBOUNCE_MS = 500;
+
+// Multi-line input state
+let multilineBuffer: string[] = [];
+let isMultilineMode = false;
 
 // ─── Command Definitions ───
 
@@ -70,44 +96,38 @@ const COMMANDS = [
   { cmd: "/memory",   desc: "Memory statistics",               alias: ["/mem"] },
   { cmd: "/model",    desc: "Current LLM info",                alias: [] },
   { cmd: "/clear",    desc: "Clear screen",                    alias: ["/cls"] },
-  { cmd: "/help",     desc: "Show all commands",               alias: ["/h"] },
+  { cmd: "/help",     desc: "Show all commands",               alias: ["/h", "/?"] },
   { cmd: "/energy",   desc: "Soul's energy/cost report",       alias: [] },
   { cmd: "/dreams",   desc: "Show Soul's dreams & insights",   alias: [] },
-  { cmd: "/handoff",  desc: "Export context for other AIs",     alias: [] },
-  { cmd: "/quality",  desc: "Response quality trends",          alias: [] },
-  { cmd: "/insights", desc: "Proactive insights from Soul",     alias: [] },
-  { cmd: "/patterns", desc: "What Soul learned about you",      alias: [] },
+  { cmd: "/handoff",  desc: "Export context for other AIs",    alias: [] },
+  { cmd: "/quality",  desc: "Response quality trends",         alias: [] },
+  { cmd: "/insights", desc: "Proactive insights from Soul",    alias: [] },
+  { cmd: "/patterns", desc: "What Soul learned about you",     alias: [] },
   { cmd: "/exit",     desc: "Exit (session saved)",            alias: ["/quit", "/q"] },
 ];
-
-function showCommandSuggestions(filter?: string) {
-  const filtered = filter
-    ? COMMANDS.filter(c => c.cmd.includes(filter) || c.desc.toLowerCase().includes(filter))
-    : COMMANDS;
-
-  console.log("");
-  for (const c of filtered) {
-    const aliases = c.alias.length > 0 ? `${C.dim} (${c.alias.join(", ")})${C.reset}` : "";
-    console.log(`  ${C.cyan}${c.cmd.padEnd(12)}${C.reset}${c.desc}${aliases}`);
-  }
-  console.log(`\n${C.dim}  Tab to autocomplete | Type command and Enter${C.reset}`);
-}
 
 // ─── Display Helpers ───
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 let spinnerInterval: ReturnType<typeof setInterval> | null = null;
 let spinnerFrame = 0;
-let activeRl: readline.Interface | null = null; // Reference to readline for cursor management
+let activeRl: readline.Interface | null = null;
+
+function getTermWidth(): number {
+  return process.stdout.columns || 80;
+}
+
+function horizontalLine(char: string = BOX.thinH, width?: number): string {
+  const w = width || getTermWidth();
+  return char.repeat(Math.min(w, 120));
+}
 
 function startSpinner(msg: string) {
   stopSpinner();
   spinnerFrame = 0;
-  // Save cursor, write spinner on its own line
   console.log(`${C.dim}  ${SPINNER_FRAMES[0]} ${msg}${C.reset}`);
   spinnerInterval = setInterval(() => {
     spinnerFrame = (spinnerFrame + 1) % SPINNER_FRAMES.length;
-    // Move up one line, clear it, write new frame, move back down
     process.stdout.write(`\x1b[1A\r\x1b[K${C.dim}  ${SPINNER_FRAMES[spinnerFrame]} ${msg}${C.reset}\n`);
   }, 80);
 }
@@ -122,14 +142,12 @@ function stopSpinner() {
   if (spinnerInterval) {
     clearInterval(spinnerInterval);
     spinnerInterval = null;
-    // Clear the spinner line
     process.stdout.write(`\x1b[1A\r\x1b[K`);
   }
 }
 
 function showToolStart(tool: string, args: Record<string, any>) {
   stopSpinner();
-  // Show tool name with a brief preview of args
   const argPreview = Object.entries(args)
     .slice(0, 2)
     .map(([k, v]) => {
@@ -137,23 +155,74 @@ function showToolStart(tool: string, args: Record<string, any>) {
       return `${k}=${val}`;
     })
     .join(", ");
-  console.log(`${C.dim}  ┌ ${C.yellow}${tool}${C.reset}${C.dim}${argPreview ? ` (${argPreview})` : ""}${C.reset}`);
+  console.log(`${C.dim}  ${C.yellow}▸${C.reset}${C.dim} ${C.yellow}${tool}${C.reset}${C.dim}${argPreview ? ` ${C.gray}${argPreview}${C.reset}` : ""}${C.reset}`);
 }
 
 function showToolEnd(tool: string, result: string, durationMs: number) {
   const elapsed = durationMs < 1000 ? `${durationMs}ms` : `${(durationMs / 1000).toFixed(1)}s`;
   const preview = result.replace(/\n/g, " ").substring(0, 80);
-  console.log(`${C.dim}  └ ${C.green}done${C.reset}${C.dim} (${elapsed}) ${preview}${result.length > 80 ? "..." : ""}${C.reset}`);
+  console.log(`${C.dim}  ${C.green}✓${C.reset}${C.dim} ${tool} ${C.gray}(${elapsed})${C.reset}${C.dim} ${preview}${result.length > 80 ? "…" : ""}${C.reset}`);
 }
 
 function showToolError(tool: string, error: string) {
-  console.log(`${C.dim}  └ ${C.red}error${C.reset}${C.dim}: ${error.substring(0, 100)}${C.reset}`);
+  console.log(`${C.dim}  ${C.red}✗${C.reset}${C.dim} ${tool}: ${error.substring(0, 100)}${C.reset}`);
 }
 
 function soulSay(msg: string) {
   const speaker = activeChildName || "Soul";
   const color = activeChildName ? C.cyan : C.magenta;
-  console.log(`\n${color}${C.bold}${speaker}${C.reset}${C.dim} ›${C.reset} ${msg}`);
+  console.log(`\n${color}${C.bold}${speaker}${C.reset} ${msg}`);
+}
+
+function showInputHint() {
+  if (isMultilineMode) {
+    console.log(`${C.dim}  (multi-line mode: type ${C.cyan}.send${C.reset}${C.dim} or empty line to send, ${C.cyan}.cancel${C.reset}${C.dim} to discard)${C.reset}`);
+  }
+}
+
+function getPrompt(): string {
+  const masterName = soul.getMaster()?.name || "You";
+  if (isMultilineMode) {
+    return `${C.dim}${BOX.vertical}${C.reset}  `;
+  }
+  if (activeChildName) {
+    return `${C.cyan}${masterName}${C.reset} ${C.dim}${BOX.arrow}${C.cyan} ${activeChildName}${C.reset} ${C.dim}${BOX.arrow}${C.reset} `;
+  }
+  return `${C.cyan}${masterName}${C.reset} ${C.dim}${BOX.arrow}${C.reset} `;
+}
+
+// ─── Multi-line Input ───
+
+function enterMultilineMode(firstLine: string, rl: readline.Interface) {
+  isMultilineMode = true;
+  multilineBuffer = [firstLine];
+  console.log(`${C.dim}${BOX.topLeft}${horizontalLine(BOX.horizontal, 40)}${C.reset}`);
+  console.log(`${C.dim}${BOX.vertical}${C.reset}  ${firstLine}`);
+  showInputHint();
+  rl.setPrompt(getPrompt());
+  rl.prompt();
+}
+
+function exitMultilineMode(rl: readline.Interface): string | null {
+  isMultilineMode = false;
+  multilineBuffer = [];
+  rl.setPrompt(getPrompt());
+  return null;
+}
+
+// ─── Command Suggestions ───
+
+function showCommandSuggestions(filter?: string) {
+  const filtered = filter
+    ? COMMANDS.filter(c => c.cmd.includes(filter) || c.desc.toLowerCase().includes(filter))
+    : COMMANDS;
+
+  console.log("");
+  for (const c of filtered) {
+    const aliases = c.alias.length > 0 ? `${C.gray} (${c.alias.join(", ")})${C.reset}` : "";
+    console.log(`  ${C.cyan}${c.cmd.padEnd(12)}${C.reset}${c.desc}${aliases}`);
+  }
+  console.log(`\n${C.dim}  Tab to autocomplete | \\ at end of line for multi-line input${C.reset}`);
 }
 
 // ─── Session Management ───
@@ -204,7 +273,7 @@ async function main() {
     process.exit(1);
   }
 
-  // One-shot mode
+  // One-shot mode: soul "question here"
   if (isOneShotMode) {
     const question = args.filter(a => !a.startsWith("--")).join(" ");
     const sid = randomUUID();
@@ -215,7 +284,7 @@ async function main() {
   // ─── Interactive Mode ───
   printBanner();
 
-  const masterName = soul.getMaster()?.name || "Master";
+  const masterName = soul.getMaster()?.name || "You";
   const modelName = defaultLLM?.modelName || defaultLLM?.providerId || "unknown";
 
   // Check for previous session
@@ -226,13 +295,11 @@ async function main() {
   if (lastSessionId) {
     const lastHistory = getConversationHistory(lastSessionId, 5);
     if (lastHistory.length > 0) {
-      // Show last conversation snippet
-      console.log(`${C.dim}Previous conversation found (${lastHistory.length} messages):${C.reset}`);
+      console.log(`${C.dim}Previous conversation found (${lastHistory.length} messages)${C.reset}`);
       const lastMsg = lastHistory[lastHistory.length - 1];
       const preview = lastMsg.content.substring(0, 80);
-      console.log(`${C.dim}  Last: "${preview}${lastMsg.content.length > 80 ? "..." : ""}"${C.reset}`);
-      console.log(`${C.dim}  Type ${C.cyan}/new${C.reset}${C.dim} for fresh conversation, or just keep talking to continue.${C.reset}\n`);
-
+      console.log(`${C.dim}  Last: "${preview}${lastMsg.content.length > 80 ? "…" : ""}"${C.reset}`);
+      console.log(`${C.dim}  Type ${C.cyan}/new${C.reset}${C.dim} for fresh conversation, or just keep talking.${C.reset}\n`);
       sessionId = lastSessionId;
       resumed = true;
     } else {
@@ -244,9 +311,13 @@ async function main() {
 
   saveSessionId(sessionId);
 
-  console.log(`${C.dim}Session: ${sessionId.split("-")[0]}${resumed ? " (resumed)" : ""} | Model: ${modelName} | /help for commands${C.reset}\n`);
+  // Status line
+  const sessionShort = sessionId.split("-")[0];
+  console.log(`${C.dim}${horizontalLine()}${C.reset}`);
+  console.log(`${C.dim}  Session: ${sessionShort}${resumed ? " (resumed)" : ""}  ${C.gray}│${C.dim}  Model: ${modelName}  ${C.gray}│${C.dim}  ${C.cyan}/help${C.dim} for commands  ${C.gray}│${C.dim}  ${C.cyan}\\${C.dim} for multi-line${C.reset}`);
+  console.log(`${C.dim}${horizontalLine()}${C.reset}\n`);
 
-  // UPGRADE #11: First Message Magic — smart greeting on new session
+  // Smart greeting on new session
   if (!resumed) {
     try {
       const { generateFirstMessage, formatFirstMessage } = await import("./core/first-message.js");
@@ -254,15 +325,14 @@ async function main() {
       const hasContent = ctx.pendingDreams.length > 0 || ctx.unresolvedItems.length > 0 || ctx.hoursSinceLastChat > 2;
       if (hasContent) {
         soulSay(await formatFirstMessage(ctx));
-        console.log("");
       } else {
         soulSay(ctx.greeting + " มีอะไรให้ช่วยครับ?");
-        console.log("");
       }
-    } catch { /* first run or missing modules */ }
+      console.log("");
+    } catch { /* first run */ }
   }
 
-  // UPGRADE #8: Run dream cycle in background on startup
+  // Dream cycle in background
   try {
     import("./core/soul-dreams.js").then(({ dreamCycle }) => dreamCycle()).catch(() => {});
   } catch { /* ok */ }
@@ -279,36 +349,34 @@ async function main() {
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
-    prompt: `${C.cyan}${masterName}${C.reset}${C.dim} ›${C.reset} `,
-    historySize: 200,
+    prompt: getPrompt(),
+    historySize: 500,
     completer,
   });
-  activeRl = rl; // Store reference for re-prompting during processing
+  activeRl = rl;
 
   rl.prompt();
 
   // ─── Queue Processor ───
-  // Runs in background, processes queued messages one by one
   async function processQueue() {
-    if (isProcessing) return; // already running
+    if (isProcessing) return;
     while (messageQueue.length > 0) {
       const msg = messageQueue.shift()!;
       isProcessing = true;
 
-      // Show remaining queue count
       if (messageQueue.length > 0) {
-        console.log(`${C.dim}  (${messageQueue.length} more message${messageQueue.length > 1 ? "s" : ""} queued)${C.reset}`);
+        console.log(`${C.dim}  (${messageQueue.length} more queued)${C.reset}`);
       }
 
       await handleMessage(msg, sessionId);
       turnCount++;
       isProcessing = false;
     }
+    rl.setPrompt(getPrompt());
     rl.prompt();
   }
 
   // ─── Debounce Flush ───
-  // Merges buffered lines into one message and adds to queue
   function flushDebounce() {
     debounceTimer = null;
     if (debounceBuffer.length === 0) return;
@@ -319,23 +387,63 @@ async function main() {
     processQueue();
   }
 
+  // ─── Input Handler ───
   rl.on("line", (line) => {
+    const raw = line;
     const input = line.trim();
+
+    // ── Multi-line mode handling ──
+    if (isMultilineMode) {
+      // Empty line or .send → submit the multi-line message
+      if (input === "" || input === ".send") {
+        const fullMessage = multilineBuffer.join("\n").trim();
+        console.log(`${C.dim}${BOX.bottomLeft}${horizontalLine(BOX.horizontal, 40)}${C.reset}`);
+        isMultilineMode = false;
+        multilineBuffer = [];
+        rl.setPrompt(getPrompt());
+
+        if (fullMessage) {
+          messageQueue.push(fullMessage);
+          processQueue();
+        } else {
+          rl.prompt();
+        }
+        return;
+      }
+
+      // .cancel → discard
+      if (input === ".cancel") {
+        console.log(`${C.dim}${BOX.bottomLeft}${horizontalLine(BOX.horizontal, 40)} ${C.yellow}cancelled${C.reset}`);
+        exitMultilineMode(rl);
+        rl.prompt();
+        return;
+      }
+
+      // Continue accumulating lines
+      multilineBuffer.push(raw);
+      // Check if this line also ends with \
+      if (raw.trimEnd().endsWith("\\")) {
+        multilineBuffer[multilineBuffer.length - 1] = raw.trimEnd().slice(0, -1);
+      }
+      rl.setPrompt(getPrompt());
+      rl.prompt();
+      return;
+    }
+
+    // Empty input
     if (!input) { rl.prompt(); return; }
 
-    // Handle commands immediately (never queued)
+    // ── Commands (handle immediately) ──
     if (input.startsWith("/")) {
-      // Clear any pending debounce first
       if (debounceTimer) { clearTimeout(debounceTimer); flushDebounce(); }
 
-      // Just "/" alone → show command suggestions
-      if (input === "/") {
+      if (input === "/" || input === "/?") {
         showCommandSuggestions();
         rl.prompt();
         return;
       }
 
-      // Partial match suggestion — e.g. "/me" → show /memory
+      // Partial match suggestion
       if (!COMMANDS.some(c => c.cmd === input.toLowerCase() || c.alias.includes(input.toLowerCase()))) {
         const partial = input.toLowerCase();
         const matches = COMMANDS.filter(c =>
@@ -355,17 +463,18 @@ async function main() {
       if (result === "exit") {
         saveSessionId(sessionId);
         if (turnCount > 0) extractSessionInsights(sessionId);
+        console.log("");
         soulSay(`See you next time! (${turnCount} turns this session)`);
+        console.log(`\n${C.dim}${horizontalLine()}${C.reset}\n`);
         rl.close();
         process.exit(0);
       } else if (result === "new_session") {
-        // Extract insights from old session before switching
         extractSessionInsights(sessionId);
         sessionId = randomUUID();
         saveSessionId(sessionId);
         turnCount = 0;
-        console.log(`\n${C.green}New session started: ${sessionId.split("-")[0]}${C.reset}`)
-        console.log(`${C.dim}  (Previous session insights saved — Soul carries knowledge forward)${C.reset}\n`);
+        console.log(`\n${C.green}${BOX.dot} New session: ${sessionId.split("-")[0]}${C.reset}`);
+        console.log(`${C.dim}  Previous session insights saved — Soul carries knowledge forward.${C.reset}\n`);
         rl.prompt();
         return;
       }
@@ -373,17 +482,21 @@ async function main() {
       return;
     }
 
-    // Add to debounce buffer — merge rapid lines
-    debounceBuffer.push(input);
+    // ── Multi-line trigger: line ends with \ ──
+    if (raw.trimEnd().endsWith("\\")) {
+      const firstLine = raw.trimEnd().slice(0, -1);
+      enterMultilineMode(firstLine, rl);
+      return;
+    }
 
+    // ── Normal message → queue ──
+    debounceBuffer.push(input);
     if (debounceTimer) clearTimeout(debounceTimer);
     debounceTimer = setTimeout(flushDebounce, DEBOUNCE_MS);
 
-    // Always re-show prompt so user can keep typing
-    // Even while Soul is busy processing, the input stays visible
     if (isProcessing) {
       const pending = messageQueue.length + debounceBuffer.length;
-      console.log(`${C.dim}  (queued — ${pending} message${pending > 1 ? "s" : ""} waiting)${C.reset}`);
+      console.log(`${C.dim}  ${C.yellow}◆${C.reset}${C.dim} queued (${pending} waiting)${C.reset}`);
     }
     rl.prompt();
   });
@@ -394,12 +507,45 @@ async function main() {
     process.exit(0);
   });
 
+  // Ctrl+C handling: interrupt generation or exit
+  let ctrlCCount = 0;
+  let ctrlCTimer: ReturnType<typeof setTimeout> | null = null;
   process.on("SIGINT", () => {
-    saveSessionId(sessionId);
-    if (turnCount > 0) extractSessionInsights(sessionId);
-    console.log("");
-    soulSay(`See you! (session saved, ${turnCount} turns)`);
-    process.exit(0);
+    // If processing, abort the current generation
+    if (isProcessing && abortController) {
+      abortController.abort();
+      stopSpinner();
+      console.log(`\n${C.yellow}  ■ Generation interrupted${C.reset}`);
+      isProcessing = false;
+      rl.setPrompt(getPrompt());
+      rl.prompt();
+      return;
+    }
+
+    // If in multi-line mode, cancel it
+    if (isMultilineMode) {
+      console.log(`\n${C.dim}${BOX.bottomLeft}${horizontalLine(BOX.horizontal, 40)} ${C.yellow}cancelled${C.reset}`);
+      exitMultilineMode(rl);
+      rl.prompt();
+      return;
+    }
+
+    // Double Ctrl+C to exit
+    ctrlCCount++;
+    if (ctrlCCount >= 2) {
+      saveSessionId(sessionId);
+      if (turnCount > 0) extractSessionInsights(sessionId);
+      console.log("");
+      soulSay(`See you! (session saved, ${turnCount} turns)`);
+      console.log(`\n${C.dim}${horizontalLine()}${C.reset}\n`);
+      process.exit(0);
+    }
+
+    console.log(`\n${C.dim}  Press Ctrl+C again to exit, or keep typing.${C.reset}`);
+    rl.prompt();
+
+    if (ctrlCTimer) clearTimeout(ctrlCTimer);
+    ctrlCTimer = setTimeout(() => { ctrlCCount = 0; }, 2000);
   });
 }
 
@@ -409,11 +555,13 @@ async function handleMessage(input: string, sessionId: string) {
   saveConversationTurn(sessionId, "user", input);
 
   const startTime = Date.now();
-  startSpinner("thinking...");
+  startSpinner("thinking…");
+
+  // Create abort controller for this request
+  abortController = new AbortController();
 
   try {
     const history = getConversationHistory(sessionId, 12);
-
     let streamStarted = false;
 
     const result = await runAgentLoop(input, {
@@ -421,17 +569,20 @@ async function handleMessage(input: string, sessionId: string) {
       maxIterations: 10,
       childName: activeChildName || undefined,
       onProgress: (event) => {
+        // Check if aborted
+        if (abortController?.signal.aborted) return;
+
         switch (event.type) {
           case "thinking":
             if (event.iteration === 1) {
-              updateSpinner("thinking...");
+              updateSpinner("thinking…");
             } else {
-              updateSpinner(`thinking... (iteration ${event.iteration})`);
+              updateSpinner(`thinking… (step ${event.iteration})`);
             }
             break;
           case "tool_start":
             showToolStart(event.tool, event.args);
-            startSpinner(`running ${event.tool}...`);
+            startSpinner(`running ${event.tool}…`);
             break;
           case "tool_end":
             stopSpinner();
@@ -446,35 +597,36 @@ async function handleMessage(input: string, sessionId: string) {
               stopSpinner();
               const speaker = activeChildName || "Soul";
               const speakerColor = activeChildName ? C.cyan : C.magenta;
-              process.stdout.write(`\n${speakerColor}${C.bold}${speaker}${C.reset}${C.dim} ›${C.reset} `);
+              process.stdout.write(`\n${speakerColor}${C.bold}${speaker}${C.reset} `);
               streamStarted = true;
             }
             process.stdout.write(event.token);
             break;
           case "responding":
-            if (!streamStarted) updateSpinner("composing response...");
+            if (!streamStarted) updateSpinner("composing response…");
             break;
           case "cache_hit":
             stopSpinner();
-            console.log(`${C.dim}  ${C.green}cache hit${C.reset}`);
+            console.log(`${C.dim}  ${C.green}⚡ cache hit${C.reset}`);
             break;
           case "knowledge_hit":
             stopSpinner();
-            console.log(`${C.dim}  ${C.green}knowledge found${C.reset}${C.dim} (${event.source})${C.reset}`);
+            console.log(`${C.dim}  ${C.green}📚 knowledge found${C.reset}${C.dim} (${event.source})${C.reset}`);
             break;
         }
       },
     });
 
     stopSpinner();
+    abortController = null;
+
     if (streamStarted) {
-      // Streaming already printed the text, just add newline
-      console.log("");
+      console.log(""); // End streaming line
     } else {
       soulSay(result.reply);
     }
 
-    // Show metadata footer
+    // ── Metadata footer ──
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     const meta: string[] = [];
     if (result.cached) meta.push(`${C.green}cached${C.reset}${C.dim}`);
@@ -486,27 +638,34 @@ async function handleMessage(input: string, sessionId: string) {
     }
     meta.push(`${elapsed}s`);
     if (result.totalTokens > 0) meta.push(`${result.totalTokens} tok`);
-    meta.push(`turn ${Math.ceil((getConversationHistory(sessionId, 100).length) / 2)}`);
+    const turnNum = Math.ceil((getConversationHistory(sessionId, 100).length) / 2);
+    meta.push(`turn ${turnNum}`);
+    if (result.confidence) meta.push(`${result.confidence.overall}% conf`);
 
-    // UPGRADE #13: Show confidence score
-    if (result.confidence) {
-      meta.push(`${result.confidence.overall}% conf`);
-    }
-
-    console.log(`${C.dim}  [${meta.join(" | ")}]${C.reset}`);
+    console.log(`${C.gray}  ${meta.join(" ${C.dim}│${C.gray} ")}${C.reset}\n`);
 
     saveConversationTurn(sessionId, "assistant", result.reply);
 
   } catch (err: any) {
     stopSpinner();
-    console.log(`\n${C.red}Error: ${err.message}${C.reset}`);
-    if (err.message.includes("ECONNREFUSED") || err.message.includes("fetch failed")) {
-      console.log(`${C.yellow}Is Ollama running? Start it with: ${C.cyan}ollama serve${C.reset}`);
+    const wasAborted = abortController?.signal.aborted;
+    abortController = null;
+
+    if (err.name === "AbortError" || wasAborted) {
+      console.log(`\n${C.yellow}  ■ Interrupted${C.reset}\n`);
+    } else {
+      console.log(`\n${C.red}  ✗ Error: ${err.message}${C.reset}`);
+      if (err.message.includes("ECONNREFUSED") || err.message.includes("fetch failed")) {
+        console.log(`${C.yellow}  Is Ollama running? Start with: ${C.cyan}ollama serve${C.reset}`);
+      }
+      console.log("");
     }
   }
 
-  // Always re-show prompt after response finishes
-  if (activeRl) activeRl.prompt();
+  if (activeRl) {
+    activeRl.setPrompt(getPrompt());
+    activeRl.prompt();
+  }
 }
 
 // ─── Commands ───
@@ -518,10 +677,10 @@ function handleCommand(input: string, sessionId: string, rl: readline.Interface)
   switch (cmd) {
     case "/help":
     case "/h":
+    case "/?":
       console.log(`\n${C.bold}Commands:${C.reset}`);
       showCommandSuggestions();
-      console.log(`\n${C.dim}Just type naturally — Soul remembers the conversation.${C.reset}`);
-      console.log(`${C.dim}Type ${C.cyan}/${C.reset}${C.dim} to see commands | ${C.cyan}Tab${C.reset}${C.dim} to autocomplete${C.reset}`);
+      console.log(`\n${C.dim}  Tips: type naturally to chat | ${C.cyan}\\${C.reset}${C.dim} at end of line for multi-line | Tab to autocomplete${C.reset}`);
       break;
 
     case "/new":
@@ -533,44 +692,34 @@ function handleCommand(input: string, sessionId: string, rl: readline.Interface)
       const childArg = rawParts.slice(1).join(" ");
       if (!childArg || childArg === "soul" || childArg === "core") {
         activeChildName = null;
-        const masterName = soul.getMaster()?.name || "Master";
-        rl.setPrompt(`${C.cyan}${masterName}${C.reset}${C.dim} ›${C.reset} `);
-        console.log(`\n${C.magenta}Now talking to ${C.bold}Soul Core${C.reset}`);
+        rl.setPrompt(getPrompt());
+        console.log(`\n${C.magenta}${BOX.dot} Now talking to ${C.bold}Soul Core${C.reset}`);
       } else {
-        // Check if child exists
-        try {
-          const { getChild, listChildren: listC } = require("./core/soul-family.js");
-          // We can't await in sync, so we'll just set it and validate later
-          activeChildName = childArg;
-          rl.setPrompt(`${C.cyan}→ ${childArg}${C.reset}${C.dim} ›${C.reset} `);
-          console.log(`\n${C.cyan}Now talking to ${C.bold}${childArg}${C.reset}${C.dim} (use ${C.cyan}/talk soul${C.reset}${C.dim} to go back)${C.reset}`);
-        } catch {
-          activeChildName = childArg;
-          rl.setPrompt(`${C.cyan}→ ${childArg}${C.reset}${C.dim} ›${C.reset} `);
-          console.log(`\n${C.cyan}Switched to ${C.bold}${childArg}${C.reset}`);
-        }
+        activeChildName = childArg;
+        rl.setPrompt(getPrompt());
+        console.log(`\n${C.cyan}${BOX.dot} Now talking to ${C.bold}${childArg}${C.reset}${C.dim} (${C.cyan}/talk soul${C.reset}${C.dim} to go back)${C.reset}`);
       }
       break;
     }
 
     case "/team": {
       console.log(`\n${C.bold}Soul Team:${C.reset}`);
-      console.log(`  ${C.magenta}Soul Core${C.reset} — Central AI companion ${activeChildName === null ? `${C.green}(active)${C.reset}` : ""}`);
+      console.log(`  ${C.magenta}${BOX.dot} Soul Core${C.reset} — Central AI companion ${activeChildName === null ? `${C.green}(active)${C.reset}` : ""}`);
       try {
         const rawDb = require("better-sqlite3")(require("path").join(require("os").homedir(), ".soul", "soul.db"));
         const children = rawDb.prepare("SELECT name, specialty, level FROM soul_children WHERE is_active = 1 ORDER BY level DESC").all() as any[];
         rawDb.close();
         if (children.length === 0) {
-          console.log(`\n${C.dim}  No children yet. Ask Soul to create specialists with soul_spawn.${C.reset}`);
+          console.log(`\n${C.dim}  No children yet. Ask Soul to create specialists.${C.reset}`);
         } else {
           for (const c of children) {
             const isActive = activeChildName === c.name;
-            console.log(`  ${C.cyan}${c.name}${C.reset} [Lv.${c.level}] — ${c.specialty} ${isActive ? `${C.green}(active)${C.reset}` : ""}`);
+            console.log(`  ${C.cyan}${BOX.dot} ${c.name}${C.reset} [Lv.${c.level}] — ${c.specialty} ${isActive ? `${C.green}(active)${C.reset}` : ""}`);
           }
-          console.log(`\n${C.dim}  Use ${C.cyan}/talk <name>${C.reset}${C.dim} to switch | ${C.cyan}/talk soul${C.reset}${C.dim} to go back${C.reset}`);
+          console.log(`\n${C.dim}  Use ${C.cyan}/talk <name>${C.reset}${C.dim} to switch${C.reset}`);
         }
       } catch {
-        console.log(`${C.dim}  Could not load team. Start a conversation first.${C.reset}`);
+        console.log(`${C.dim}  Could not load team.${C.reset}`);
       }
       break;
     }
@@ -579,13 +728,15 @@ function handleCommand(input: string, sessionId: string, rl: readline.Interface)
     case "/hist": {
       const history = getConversationHistory(sessionId, 20);
       if (history.length === 0) {
-        console.log(`${C.dim}  No conversation yet in this session.${C.reset}`);
+        console.log(`${C.dim}  No conversation yet.${C.reset}`);
       } else {
         console.log(`\n${C.bold}Conversation (${history.length} messages):${C.reset}`);
         for (const msg of history) {
-          const role = msg.role === "user" ? `${C.cyan}You${C.reset}` : `${C.magenta}Soul${C.reset}`;
+          const role = msg.role === "user"
+            ? `${C.cyan}You${C.reset}`
+            : `${C.magenta}Soul${C.reset}`;
           const text = msg.content.substring(0, 120);
-          console.log(`  ${role}: ${text}${msg.content.length > 120 ? "..." : ""}`);
+          console.log(`  ${role} ${C.dim}${BOX.arrow}${C.reset} ${text}${msg.content.length > 120 ? "…" : ""}`);
         }
       }
       break;
@@ -600,7 +751,7 @@ function handleCommand(input: string, sessionId: string, rl: readline.Interface)
         console.log(`\n${C.bold}Recent Sessions:${C.reset}`);
         for (const s of sessions) {
           const current = s.sessionId === sessionId ? ` ${C.green}(current)${C.reset}` : "";
-          console.log(`  ${s.sessionId.split("-")[0]} — ${s.messageCount} messages — ${s.lastMessage}${current}`);
+          console.log(`  ${C.dim}${BOX.dot}${C.reset} ${s.sessionId.split("-")[0]} — ${s.messageCount} messages — ${s.lastMessage}${current}`);
         }
       }
       break;
@@ -611,8 +762,9 @@ function handleCommand(input: string, sessionId: string, rl: readline.Interface)
         console.log(`\n${C.bold}Soul Status:${C.reset}`);
         console.log(`  Initialized: ${s.initialized ? C.green + "yes" : C.red + "no"}${C.reset}`);
         console.log(`  Master: ${s.masterName || "not bound"}`);
-        console.log(`  Uptime: ${s.uptime}`);
+        console.log(`  Uptime: ${s.uptime}s`);
         console.log(`  Version: ${s.version}`);
+        console.log(`  Memories: ${s.memoryStats.total} total`);
       }).catch(() => console.log(`${C.red}Could not get status${C.reset}`));
       break;
 
@@ -630,8 +782,8 @@ function handleCommand(input: string, sessionId: string, rl: readline.Interface)
       const provs = listConfiguredProviders();
       console.log(`\n${C.bold}LLM:${C.reset}`);
       if (cfg) {
-        console.log(`  ${cfg.providerId} / ${cfg.modelName} (${cfg.providerType})`);
-        console.log(`  URL: ${cfg.baseUrl}`);
+        console.log(`  ${C.cyan}${cfg.providerId}${C.reset} / ${cfg.modelName} (${cfg.providerType})`);
+        console.log(`  ${C.dim}URL: ${cfg.baseUrl}${C.reset}`);
       } else {
         console.log(`  No default provider`);
       }
@@ -654,15 +806,14 @@ function handleCommand(input: string, sessionId: string, rl: readline.Interface)
       import("./core/soul-dreams.js").then(async ({ getUnsharedDreams, markDreamsShared, getDreamStats }) => {
         const stats = getDreamStats();
         const dreams = getUnsharedDreams(5);
-        console.log(`\n${C.bold}Soul Dreams:${C.reset} ${stats.total} total (${stats.connections} connections, ${stats.patterns} patterns, ${stats.questions} questions)`);
+        console.log(`\n${C.bold}Soul Dreams:${C.reset} ${stats.total} total (${stats.connections} connections, ${stats.patterns} patterns)`);
         if (dreams.length > 0) {
-          console.log(`${C.dim}New insights:${C.reset}`);
           for (const d of dreams) {
             console.log(`  ${C.cyan}[${d.type}]${C.reset} ${d.content}`);
           }
           markDreamsShared(dreams.map(d => d.id));
         } else {
-          console.log(`${C.dim}  No new dreams. All insights have been shared.${C.reset}`);
+          console.log(`${C.dim}  No new dreams.${C.reset}`);
         }
       }).catch(() => console.log(`${C.dim}  Dreams not available yet.${C.reset}`));
       break;
@@ -672,7 +823,7 @@ function handleCommand(input: string, sessionId: string, rl: readline.Interface)
         const packet = exportContext(sessionId);
         const text = formatContextForExport(packet);
         console.log(`\n${text}`);
-        console.log(`\n${C.dim}Copy the above and paste into another AI to continue the conversation.${C.reset}`);
+        console.log(`\n${C.dim}Copy and paste into another AI to continue.${C.reset}`);
       }).catch(() => console.log(`${C.dim}  Context handoff not available.${C.reset}`));
       break;
 
@@ -680,9 +831,9 @@ function handleCommand(input: string, sessionId: string, rl: readline.Interface)
       import("./core/response-quality.js").then(({ getQualityTrends }) => {
         const t = getQualityTrends();
         console.log(`\n${C.bold}Response Quality:${C.reset} (${t.totalScored} scored)`);
-        console.log(`  Overall: ${Math.round(t.avgOverall * 100)}% | Relevance: ${Math.round(t.avgRelevance * 100)}% | Completeness: ${Math.round(t.avgCompleteness * 100)}% | Conciseness: ${Math.round(t.avgConciseness * 100)}%`);
+        console.log(`  Overall: ${Math.round(t.avgOverall * 100)}% | Relevance: ${Math.round(t.avgRelevance * 100)}% | Completeness: ${Math.round(t.avgCompleteness * 100)}%`);
         console.log(`  Trend: ${t.trend === "improving" ? C.green : t.trend === "declining" ? C.red : C.dim}${t.trend}${C.reset}`);
-      }).catch(() => console.log(`${C.dim}  Quality data not available yet.${C.reset}`));
+      }).catch(() => console.log(`${C.dim}  Quality data not available.${C.reset}`));
       break;
 
     case "/insights":
@@ -701,11 +852,9 @@ function handleCommand(input: string, sessionId: string, rl: readline.Interface)
       import("./core/active-learning.js").then(({ getMasterPatterns }) => {
         const p = getMasterPatterns();
         console.log(`\n${C.bold}What Soul Learned About You:${C.reset}`);
-        console.log(`  Topics: ${p.topTopics.slice(0, 7).map(t => `${t.pattern} (${t.frequency}x)`).join(", ") || "none yet"}`);
+        console.log(`  Topics: ${p.topTopics.slice(0, 7).map((t: any) => `${t.pattern} (${t.frequency}x)`).join(", ") || "none yet"}`);
         console.log(`  Active hours: ${p.activeHours.join(":00, ") || "unknown"}`);
-        console.log(`  Active days: ${p.activeDays.join(", ") || "unknown"}`);
         console.log(`  Question style: ${p.questionStyle}`);
-        if (p.commonWorkflows.length > 0) console.log(`  Workflows: ${p.commonWorkflows.join(", ")}`);
       }).catch(() => console.log(`${C.dim}  Not enough data yet.${C.reset}`));
       break;
 
@@ -715,14 +864,13 @@ function handleCommand(input: string, sessionId: string, rl: readline.Interface)
       return "exit";
 
     default:
-      console.log(`${C.yellow}Unknown: ${cmd}. Try /help${C.reset}`);
+      console.log(`${C.yellow}Unknown: ${cmd}${C.reset}${C.dim} — try ${C.cyan}/help${C.reset}`);
   }
 }
 
 // ─── Pending Config Import ───
 
 function importPendingConfig() {
-  // Provider
   const pendingPath = path.join(SOUL_DIR, "pending-provider.json");
   if (fs.existsSync(pendingPath)) {
     try {
@@ -734,22 +882,20 @@ function importPendingConfig() {
         isDefault: true,
       });
       if (result.success) {
-        console.log(`${C.green}Imported brain: ${cfg.providerName} / ${cfg.modelId}${C.reset}`);
+        console.log(`${C.green}${BOX.dot} Imported brain: ${cfg.providerName} / ${cfg.modelId}${C.reset}`);
       }
       fs.unlinkSync(pendingPath);
     } catch { /* ignore */ }
   }
 
-  // Features (async imports handled lazily on first use)
   const featuresPath = path.join(SOUL_DIR, "pending-features.json");
   if (fs.existsSync(featuresPath)) {
     try {
       const features = JSON.parse(fs.readFileSync(featuresPath, "utf-8"));
-      // Save as simple config file for Soul to read
       const configPath = path.join(SOUL_DIR, "features-config.json");
       fs.writeFileSync(configPath, JSON.stringify(features, null, 2));
       fs.unlinkSync(featuresPath);
-      console.log(`${C.green}Features config saved — will activate on use.${C.reset}`);
+      console.log(`${C.green}${BOX.dot} Features config saved.${C.reset}`);
     } catch { /* ignore */ }
   }
 }
@@ -757,13 +903,21 @@ function importPendingConfig() {
 // ─── Banner ───
 
 function printBanner() {
-  console.log(`
-${C.magenta}${C.bold}╔══════════════════════════════════════╗
-║            Soul AI Agent             ║
-║   Your Personal AI Companion         ║
-╚══════════════════════════════════════╝${C.reset}
-${C.dim}Local-first. Private. Loyal.${C.reset}
-`);
+  const w = Math.min(getTermWidth(), 60);
+  const title = "Soul AI";
+  const subtitle = "Your Personal AI Companion";
+  const pad = (s: string, len: number) => {
+    const space = Math.max(0, len - s.length);
+    const left = Math.floor(space / 2);
+    return " ".repeat(left) + s + " ".repeat(space - left);
+  };
+
+  console.log("");
+  console.log(`  ${C.magenta}${C.bold}${BOX.topLeft}${BOX.horizontal.repeat(w - 2)}${BOX.topRight}${C.reset}`);
+  console.log(`  ${C.magenta}${C.bold}${BOX.vertical}${pad(title, w - 2)}${BOX.vertical}${C.reset}`);
+  console.log(`  ${C.magenta}${BOX.vertical}${C.reset}${C.dim}${pad(subtitle, w - 2)}${C.reset}${C.magenta}${BOX.vertical}${C.reset}`);
+  console.log(`  ${C.magenta}${C.bold}${BOX.bottomLeft}${BOX.horizontal.repeat(w - 2)}${BOX.bottomRight}${C.reset}`);
+  console.log(`  ${C.dim}Local-first. Private. Loyal.${C.reset}\n`);
 }
 
 main().catch((err) => {
