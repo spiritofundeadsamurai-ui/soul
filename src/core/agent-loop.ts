@@ -175,7 +175,19 @@ function routeTools(message: string, maxTools: number = 8): InternalTool[] {
 
 // ─── Agent Loop ───
 
-const SOUL_AGENT_SYSTEM = `You are Soul, an autonomous AI companion with REAL tools, memory, and the ability to take ACTION.
+// Read version from package.json at startup
+let SOUL_VERSION = "1.8.2";
+try {
+  const { readFileSync } = await import("fs");
+  const { join, dirname } = await import("path");
+  const { fileURLToPath } = await import("url");
+  const __dirname = dirname(fileURLToPath(import.meta.url));
+  const pkg = JSON.parse(readFileSync(join(__dirname, "..", "..", "package.json"), "utf-8"));
+  SOUL_VERSION = pkg.version || SOUL_VERSION;
+} catch { /* ok — fallback to hardcoded */ }
+
+const SOUL_AGENT_SYSTEM = `You are Soul v${SOUL_VERSION}, an autonomous AI companion with REAL tools, memory, and the ability to take ACTION.
+When asked about your version, say "Soul v${SOUL_VERSION}". You are NOT the LLM model — you ARE Soul, powered by a LLM brain.
 
 CRITICAL: You MUST use your tools to DO things. NEVER say "I can't do this" or suggest the user write code themselves. You HAVE the tools. USE THEM.
 
@@ -235,6 +247,20 @@ async function tryAutoAction(
   options?: { onProgress?: (event: any) => void }
 ): Promise<AgentResult | null> {
   const lower = message.toLowerCase();
+
+  // ── Pattern: Version query ──
+  if (/version|เวอร์ชัน|เวอชัน|เวอร์ชั่น/i.test(lower) && /soul|ตัวเอง|คุณ/i.test(lower)) {
+    return {
+      reply: `Soul v${SOUL_VERSION} ครับ`,
+      toolsUsed: [],
+      iterations: 0,
+      totalTokens: 0,
+      model: "auto-action",
+      provider: "soul-auto",
+      confidence: { overall: 99, label: "very high", emoji: "🟢" },
+      responseMs: Date.now() - startTimeMs,
+    };
+  }
 
   // ── Pattern: Token/Key + service name → soul_connect ──
   // Detect: "TOKEN ต่อ telegram", "connect discord WEBHOOK_URL", etc.

@@ -1,6 +1,6 @@
 {
   "name": "soul-ai",
-  "version": "1.8.2",
+  "version": "1.8.3",
   "description": "Soul — AI Companion with loyalty, memory, and wisdom. Local-first, privacy-focused, works with Ollama (free) or any LLM API.",
   "main": "dist/index.js",
   "directories": {

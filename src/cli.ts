@@ -642,7 +642,7 @@ async function handleMessage(input: string, sessionId: string) {
     meta.push(`turn ${turnNum}`);
     if (result.confidence) meta.push(`${result.confidence.overall}% conf`);
 
-    console.log(`${C.gray}  ${meta.join(" ${C.dim}│${C.gray} ")}${C.reset}\n`);
+    console.log(`${C.gray}  ${meta.join(` ${C.dim}│${C.gray} `)}${C.reset}\n`);
 
     saveConversationTurn(sessionId, "assistant", result.reply);
 
