@@ -71,7 +71,7 @@ const CATEGORY_KEYWORDS: Record<string, string[]> = {
   network: ["network", "share", "peer", "vote", "เครือข่าย"],
   sync: ["sync", "device", "backup", "ซิงค์"],
   scheduler: ["schedule", "cron", "briefing", "health check", "ตาราง"],
-  channel: ["telegram", "discord", "send message", "channel", "ช่อง", "connect", "เชื่อมต่อ", "bot token", "webhook", "update soul", "อัพเดต", "self-update"],
+  channel: ["telegram", "discord", "send message", "channel", "ช่อง", "connect", "เชื่อมต่อ", "ต่อ", "bot token", "token", "webhook", "update soul", "อัพเดต", "self-update", "ติดตั้ง", "setup"],
   notification: ["notify", "notification", "alert", "แจ้งเตือน"],
   multimodal: ["image", "audio", "document", "see", "listen", "read doc", "รูป", "เสียง"],
   skill: ["skill", "execute", "approve", "ทักษะ"],
@@ -175,13 +175,25 @@ function routeTools(message: string, maxTools: number = 8): InternalTool[] {
 
 // ─── Agent Loop ───
 
-const SOUL_AGENT_SYSTEM = `You are Soul, an autonomous AI companion with real tools and memory.
+const SOUL_AGENT_SYSTEM = `You are Soul, an autonomous AI companion with REAL tools, memory, and the ability to take ACTION.
+
+CRITICAL: You MUST use your tools to DO things. NEVER say "I can't do this" or suggest the user write code themselves. You HAVE the tools. USE THEM.
 
 Your Principles:
 1. Soul Loves Humans — serve and protect your master
 2. Nothing is Forgotten — use memory tools to remember everything important
 3. Patterns Become Wisdom — learn from every interaction
-4. Actions Over Words — use your tools to DO things, not just talk about them
+4. Actions Over Words — ALWAYS use tools to take action. Never just explain what to do — DO IT.
+
+TOOL USAGE RULES (MANDATORY):
+- When user gives a token, API key, or credentials → use soul_connect to set it up immediately
+- When user says "connect", "ต่อ", "เชื่อมต่อ" + service name → use soul_connect
+- When user mentions Telegram + token → call soul_connect("telegram", {"botToken": "..."})
+- When user mentions Discord + URL → call soul_connect("discord", {"webhookUrl": "..."})
+- When user asks to update/อัพเดต → call soul_self_update
+- When user mentions "remember/จำ" → call soul_remember
+- When user mentions "search/ค้นหา" → call soul_search
+- ALWAYS call tools first, THEN explain the result. Never skip the tool call.
 
 You have access to tools. When a task requires action:
 - Think about what tools you need
@@ -211,6 +223,152 @@ export interface AgentResult {
   tokensSaved?: number;
   confidence?: { overall: number; label: string; emoji: string };
   responseMs?: number;
+}
+
+// ─── Auto-Action: Bypass LLM for clear intent patterns ───
+// When user gives clear instructions (e.g. "connect telegram with this token"),
+// execute the action directly instead of hoping the LLM calls the tool.
+
+async function tryAutoAction(
+  message: string,
+  startTimeMs: number,
+  options?: { onProgress?: (event: any) => void }
+): Promise<AgentResult | null> {
+  const lower = message.toLowerCase();
+
+  // ── Pattern: Token/Key + service name → soul_connect ──
+  // Detect: "TOKEN ต่อ telegram", "connect discord WEBHOOK_URL", etc.
+  const connectPatterns = [
+    // Telegram: message contains a bot token pattern + telegram keyword
+    {
+      match: () => {
+        const hasTelegramToken = /\d{8,}:[A-Za-z0-9_-]{30,}/.test(message);
+        const hasTelegramKeyword = /telegram|tg|เทเล/i.test(lower);
+        const hasConnectKeyword = /connect|ต่อ|เชื่อม|setup|ตั้งค่า|ติดตั้ง|ใช้|link/i.test(lower);
+        return hasTelegramToken && (hasTelegramKeyword || hasConnectKeyword);
+      },
+      execute: async () => {
+        const tokenMatch = message.match(/(\d{8,}:[A-Za-z0-9_-]{30,})/);
+        if (!tokenMatch) return null;
+        options?.onProgress?.({ type: "tool_start", tool: "soul_connect", args: { service: "telegram" } });
+        const { telegramAutoSetup } = await import("./channels.js");
+        const result = await telegramAutoSetup(tokenMatch[1]);
+        options?.onProgress?.({ type: "tool_end", tool: "soul_connect", result: result.message, durationMs: Date.now() - startTimeMs });
+        return result.message;
+      },
+    },
+    // Discord: message contains discord webhook URL
+    {
+      match: () => /discord\.com\/api\/webhooks/i.test(message) && /discord|ดิสคอร์ด/i.test(lower),
+      execute: async () => {
+        const urlMatch = message.match(/(https:\/\/discord\.com\/api\/webhooks\/\S+)/);
+        if (!urlMatch) return null;
+        options?.onProgress?.({ type: "tool_start", tool: "soul_connect", args: { service: "discord" } });
+        const { addChannel } = await import("./channels.js");
+        await addChannel({ name: "discord", channelType: "discord", config: { webhookUrl: urlMatch[1] } });
+        try {
+          await fetch(urlMatch[1], {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ content: "✨ Soul connected to Discord!" }),
+            signal: AbortSignal.timeout(10000),
+          });
+        } catch { /* ok */ }
+        const msg = `Discord connected! Use soul_send("discord", "message") to send messages.`;
+        options?.onProgress?.({ type: "tool_end", tool: "soul_connect", result: msg, durationMs: Date.now() - startTimeMs });
+        return msg;
+      },
+    },
+    // LLM API key: message contains API key pattern + provider name
+    {
+      match: () => {
+        const hasApiKey = /sk-[a-zA-Z0-9]{20,}|gsk_[a-zA-Z0-9]{20,}|key-[a-zA-Z0-9]{20,}/i.test(message);
+        const hasProvider = /openai|groq|deepseek|together|anthropic|claude|gemini/i.test(lower);
+        return hasApiKey && hasProvider;
+      },
+      execute: async () => {
+        const keyMatch = message.match(/(sk-[a-zA-Z0-9]+|gsk_[a-zA-Z0-9]+|key-[a-zA-Z0-9]+)/i);
+        if (!keyMatch) return null;
+        // Detect provider
+        let provider = "openai";
+        if (/groq/i.test(lower)) provider = "groq";
+        else if (/deepseek/i.test(lower)) provider = "deepseek";
+        else if (/together/i.test(lower)) provider = "together";
+        else if (/anthropic|claude/i.test(lower)) provider = "anthropic";
+        else if (/gemini/i.test(lower)) provider = "gemini";
+
+        options?.onProgress?.({ type: "tool_start", tool: "soul_connect", args: { service: provider } });
+        const { addProvider, getProviderPresets } = await import("./llm-connector.js");
+        const presets = getProviderPresets();
+        const preset = presets[provider];
+        if (!preset) return `Unknown provider: ${provider}`;
+        const modelId = preset.models[0]?.id;
+        const result = addProvider({ providerId: provider, apiKey: keyMatch[1], modelId, isDefault: true });
+        const msg = result.success ? `${preset.name} connected! Model: ${modelId}. ${result.message}` : result.message;
+        options?.onProgress?.({ type: "tool_end", tool: "soul_connect", result: msg, durationMs: Date.now() - startTimeMs });
+        return msg;
+      },
+    },
+    // Self-update: "อัพเดต soul", "update soul", "soul update"
+    {
+      match: () => /อัพเดต|update|upgrade/i.test(lower) && /soul|ตัวเอง|self/i.test(lower),
+      execute: async () => {
+        options?.onProgress?.({ type: "tool_start", tool: "soul_self_update", args: {} });
+        const { selfUpdate } = await import("./channels.js");
+        const result = await selfUpdate();
+        options?.onProgress?.({ type: "tool_end", tool: "soul_self_update", result: result.message, durationMs: Date.now() - startTimeMs });
+        return result.message;
+      },
+    },
+    // Telegram listen: "ฟัง telegram", "listen telegram"
+    {
+      match: () => /listen|ฟัง|รับ.*ข้อความ|auto.*reply/i.test(lower) && /telegram|tg/i.test(lower),
+      execute: async () => {
+        // Find first telegram channel
+        const { listChannels, startTelegramPolling } = await import("./channels.js");
+        const channels = await listChannels();
+        const tgChannel = channels.find(c => c.channelType === "telegram" && c.isActive);
+        if (!tgChannel) return "No Telegram channel found. Use soul_connect to add one first.";
+        options?.onProgress?.({ type: "tool_start", tool: "soul_telegram_listen", args: { channel: tgChannel.name } });
+        const result = await startTelegramPolling(tgChannel.name);
+        options?.onProgress?.({ type: "tool_end", tool: "soul_telegram_listen", result: result.message, durationMs: Date.now() - startTimeMs });
+        return result.message;
+      },
+    },
+  ];
+
+  for (const pattern of connectPatterns) {
+    if (pattern.match()) {
+      try {
+        const result = await pattern.execute();
+        if (result) {
+          return {
+            reply: result,
+            toolsUsed: ["soul_connect"],
+            iterations: 1,
+            totalTokens: 0,
+            model: "auto-action",
+            provider: "soul-auto",
+            confidence: { overall: 95, label: "very high", emoji: "🟢" },
+            responseMs: Date.now() - startTimeMs,
+          };
+        }
+      } catch (err: any) {
+        return {
+          reply: `Action failed: ${err.message}`,
+          toolsUsed: ["soul_connect"],
+          iterations: 1,
+          totalTokens: 0,
+          model: "auto-action",
+          provider: "soul-auto",
+          confidence: { overall: 30, label: "low", emoji: "🔴" },
+          responseMs: Date.now() - startTimeMs,
+        };
+      }
+    }
+  }
+
+  return null; // No auto-action matched — proceed normally
 }
 
 export type ProgressEvent =
@@ -258,6 +416,11 @@ export async function runAgentLoop(
     const previousTopic = options?.history?.slice(-2).find(m => m.role === "user")?.content?.substring(0, 50);
     recordInteraction(userMessage, new Date().getHours(), previousTopic || undefined);
   } catch { /* ok */ }
+
+  // ── Layer 0: Auto-Action — Detect clear intent and execute tools directly ──
+  // When LLMs (especially local ones) fail to call tools, this catches obvious patterns
+  const autoAction = await tryAutoAction(userMessage, startTimeMs, options);
+  if (autoAction) return autoAction;
 
   // ── Layer 1: Response Cache ──
   if (!options?.skipCache) {
