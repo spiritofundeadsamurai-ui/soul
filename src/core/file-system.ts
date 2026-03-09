@@ -147,7 +147,26 @@ export interface ProjectAnalysis {
 
 // ─── Configuration ───
 
-let allowedBaseDirs: string[] = [os.homedir(), process.cwd()];
+// Auto-detect available drives on Windows, or use root on Unix
+function detectBaseDirs(): string[] {
+  const dirs = [os.homedir(), process.cwd()];
+  if (process.platform === "win32") {
+    // Add all existing drive letters (C:, D:, E:, etc.)
+    for (const letter of "CDEFGHIJKLMNOPQRSTUVWXYZ") {
+      const drive = `${letter}:\\`;
+      try {
+        fs.accessSync(drive, fs.constants.R_OK);
+        if (!dirs.includes(drive)) dirs.push(drive);
+      } catch { /* drive not available */ }
+    }
+  } else {
+    // Unix: allow home and common directories
+    if (!dirs.includes("/")) dirs.push("/home", "/tmp");
+  }
+  return dirs;
+}
+
+let allowedBaseDirs: string[] = detectBaseDirs();
 
 /**
  * Configure which base directories Soul is allowed to access.
