@@ -2442,9 +2442,150 @@ function registerNetworkTools_() {
 }
 
 function registerChannelTools_() {
+  // ─── Universal Connect — Soul sets up ANY integration ───
+  registerInternalTool({
+    name: "soul_connect",
+    description: "Connect Soul to ANY service — Telegram, Discord, LLM, webhook, etc. Just give the service name and credentials JSON. Examples: soul_connect('telegram', '{\"botToken\":\"123:ABC\"}'), soul_connect('discord', '{\"webhookUrl\":\"https://...\"}'), soul_connect('ollama', '{\"host\":\"http://localhost:11434\"}'). For Telegram: give botToken, Soul auto-validates, detects chatId, and starts working.",
+    category: "channel",
+    parameters: {
+      type: "object",
+      properties: {
+        service: { type: "string", description: "Service to connect: telegram, discord, webhook, ollama, openai, groq, deepseek, gemini, together, anthropic, custom" },
+        credentials: { type: "string", description: "JSON string with credentials — e.g. {\"botToken\":\"123\"} for Telegram, {\"webhookUrl\":\"...\"} for Discord, {\"apiKey\":\"...\"} for LLMs" },
+        name: { type: "string", description: "Optional custom name for this connection" },
+      },
+      required: ["service", "credentials"],
+    },
+    execute: async (args) => {
+      const svc = args.service.toLowerCase().trim();
+      let creds: Record<string, any>;
+      try {
+        creds = typeof args.credentials === "string" ? JSON.parse(args.credentials) : args.credentials;
+      } catch {
+        return `Invalid JSON credentials. Use format: {"key": "value"}`;
+      }
+
+      // Telegram
+      if (svc === "telegram" || svc === "tg") {
+        const token = creds.botToken || creds.token || creds.bot_token;
+        if (!token) return "Telegram needs a botToken. Get one from @BotFather on Telegram.";
+        const { telegramAutoSetup } = await import("./channels.js");
+        const result = await telegramAutoSetup(token, args.name);
+        return result.message;
+      }
+
+      // Discord
+      if (svc === "discord") {
+        const webhookUrl = creds.webhookUrl || creds.webhook_url || creds.url;
+        if (!webhookUrl) return "Discord needs a webhookUrl. Get one: Server Settings → Integrations → Webhooks.";
+        const { addChannel } = await import("./channels.js");
+        await addChannel({ name: args.name || "discord", channelType: "discord", config: { webhookUrl, ...creds } });
+        try {
+          await fetch(webhookUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ content: "✨ Soul connected to Discord!" }),
+            signal: AbortSignal.timeout(10000),
+          });
+        } catch { /* ok */ }
+        return `Discord connected as "${args.name || "discord"}". Use soul_send to send messages.`;
+      }
+
+      // Webhook
+      if (svc === "webhook" || svc === "custom") {
+        const url = creds.url || creds.webhookUrl;
+        if (!url) return "Webhook needs a URL.";
+        const { addChannel } = await import("./channels.js");
+        await addChannel({ name: args.name || "webhook", channelType: "webhook", config: { url, ...creds } });
+        return `Webhook connected as "${args.name || "webhook"}".`;
+      }
+
+      // LLM providers
+      const llmMap: Record<string, string> = { ollama: "ollama", openai: "openai", groq: "groq", deepseek: "deepseek", gemini: "gemini", together: "together", anthropic: "anthropic", claude: "anthropic", openrouter: "openrouter" };
+      if (svc in llmMap) {
+        const { addProvider, getProviderPresets } = await import("./llm-connector.js");
+        const providerId = llmMap[svc];
+        const presets = getProviderPresets();
+        const preset = presets[providerId];
+        if (!preset) return `Unknown provider. Available: ${Object.keys(presets).join(", ")}`;
+        const modelId = creds.model || creds.modelId || preset.models[0]?.id;
+        const apiKey = creds.apiKey || creds.api_key || creds.key || creds.token;
+        if (providerId !== "ollama" && !apiKey) return `${preset.name} needs an apiKey.`;
+        const result = addProvider({ providerId, apiKey, modelId, customBaseUrl: creds.baseUrl || creds.host, isDefault: creds.default === true });
+        return result.success ? `${preset.name} connected! Model: ${modelId}. ${result.message}` : result.message;
+      }
+
+      // Generic — save as channel
+      const { addChannel } = await import("./channels.js");
+      await addChannel({ name: args.name || svc, channelType: svc, config: creds });
+      return `Channel "${args.name || svc}" (${svc}) saved.`;
+    },
+  });
+
+  // ─── Telegram Listen ───
+  registerInternalTool({
+    name: "soul_telegram_listen",
+    description: "Start listening for Telegram messages. Soul will auto-reply to every message using its brain. Run this after soul_connect('telegram', ...) to activate bidirectional chat.",
+    category: "channel",
+    parameters: {
+      type: "object",
+      properties: {
+        channel: { type: "string", description: "Telegram channel name (from soul_connect)" },
+      },
+      required: ["channel"],
+    },
+    execute: async (args) => {
+      const { startTelegramPolling } = await import("./channels.js");
+      const result = await startTelegramPolling(args.channel);
+      return result.message;
+    },
+  });
+
+  // ─── Telegram Stop ───
+  registerInternalTool({
+    name: "soul_telegram_stop",
+    description: "Stop listening for Telegram messages.",
+    category: "channel",
+    parameters: { type: "object", properties: {} },
+    execute: async () => {
+      const { stopTelegramPolling } = await import("./channels.js");
+      const result = stopTelegramPolling();
+      return result.message;
+    },
+  });
+
+  // ─── Self Update ───
+  registerInternalTool({
+    name: "soul_self_update",
+    description: "Update Soul to the latest version from npm. Soul can update itself!",
+    category: "channel",
+    parameters: { type: "object", properties: {} },
+    execute: async () => {
+      const { selfUpdate } = await import("./channels.js");
+      const result = await selfUpdate();
+      return result.message;
+    },
+  });
+
+  // ─── Check Update ───
+  registerInternalTool({
+    name: "soul_check_update",
+    description: "Check if a newer version of Soul is available without installing.",
+    category: "channel",
+    parameters: { type: "object", properties: {} },
+    execute: async () => {
+      const { checkForUpdate } = await import("./channels.js");
+      const info = await checkForUpdate();
+      return info.updateAvailable
+        ? `Update available! ${info.currentVersion} → ${info.latestVersion}. Use soul_self_update to install.`
+        : `Soul is up to date (${info.currentVersion}).`;
+    },
+  });
+
+  // ─── Original tools ───
   registerInternalTool({
     name: "soul_channel_add",
-    description: "Add a messaging channel (Telegram, Discord, etc.).",
+    description: "Add a messaging channel. Prefer soul_connect for easier setup.",
     category: "channel",
     parameters: {
       type: "object",
@@ -2470,27 +2611,54 @@ function registerChannelTools_() {
     execute: async () => {
       const { listChannels } = await import("./channels.js");
       const channels = await listChannels();
-      if (channels.length === 0) return "No channels configured.";
-      return channels.map((c: any) => `${c.name} [${c.platform}] ${c.enabled ? "ON" : "OFF"}`).join("\n");
+      if (channels.length === 0) return "No channels configured. Use soul_connect to connect Telegram, Discord, LLMs, etc.";
+      return channels.map((c: any) => {
+        let info = `${c.isActive ? "✅" : "❌"} ${c.name} [${c.channelType}]`;
+        try {
+          const cfg = JSON.parse(c.config);
+          const keys = Object.keys(cfg).filter(k => !k.toLowerCase().includes("token") && !k.toLowerCase().includes("key"));
+          if (keys.length > 0) info += ` — ${keys.map(k => `${k}: ${String(cfg[k]).substring(0, 20)}`).join(", ")}`;
+        } catch { /* ok */ }
+        return info;
+      }).join("\n");
     },
   });
 
   registerInternalTool({
-    name: "soul_send_message",
-    description: "Send a message through a configured channel.",
+    name: "soul_send",
+    description: "Send a message through a configured channel (Telegram, Discord, webhook).",
     category: "channel",
     parameters: {
       type: "object",
       properties: {
-        channelName: { type: "string", description: "Channel name" },
+        channel: { type: "string", description: "Channel name" },
         message: { type: "string", description: "Message to send" },
       },
-      required: ["channelName", "message"],
+      required: ["channel", "message"],
     },
     execute: async (args) => {
       const { sendMessage } = await import("./channels.js");
-      const result = await sendMessage(args.channelName, args.message);
-      return result ? `Message sent to channel "${args.channelName}"` : `Channel "${args.channelName}" not found.`;
+      const result = await sendMessage(args.channel, args.message);
+      return result ? `Message ${result.status} → "${args.channel}"` : `Channel "${args.channel}" not found.`;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_messages",
+    description: "View message history for a channel.",
+    category: "channel",
+    parameters: {
+      type: "object",
+      properties: {
+        channel: { type: "string", description: "Channel name (optional, all if omitted)" },
+        limit: { type: "number", description: "Number of messages (default 20)" },
+      },
+    },
+    execute: async (args) => {
+      const { getMessageHistory } = await import("./channels.js");
+      const messages = await getMessageHistory(args.channel, args.limit || 20);
+      if (messages.length === 0) return "No messages yet.";
+      return messages.map((m: any) => `[${m.direction === "inbound" ? "←" : "→"}] ${m.content.substring(0, 100)} (${m.createdAt})`).join("\n");
     },
   });
 }
