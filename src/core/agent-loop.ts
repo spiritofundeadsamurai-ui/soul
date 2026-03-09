@@ -368,6 +368,93 @@ async function tryAutoAction(
     };
   }
 
+  // ── Pattern: File management → use file tools directly ──
+  if (/จัดการไฟล์|อ่านไฟล์|ดูไฟล์|เปิดไฟล์|ลิสต์ไฟล์|หาไฟล์|ค้นหาไฟล์|read file|list file|manage file|open file/i.test(lower)
+    && /คอม|เครื่อง|computer|โฟลเดอร์|folder|desktop|ไดร์ฟ|drive|ดิสก์/i.test(lower)) {
+    try {
+      const { listDir } = await import("./file-system.js");
+      const homeDir = process.env.USERPROFILE || process.env.HOME || "C:\\Users";
+      const listing = await listDir(homeDir);
+      return {
+        reply: `ได้เลยครับ! ผมเข้าถึงไฟล์ในคอมได้ นี่คือไฟล์ในโฮมไดเรกทอรีของคุณ:\n\n${listing}\n\nบอกได้เลยว่าต้องการให้ทำอะไรกับไฟล์ไหนครับ`,
+        toolsUsed: ["soul_list_dir"],
+        iterations: 1,
+        totalTokens: 0,
+        model: "auto-action",
+        provider: "soul-auto",
+        confidence: { overall: 95, label: "very high", emoji: "🟢" },
+        responseMs: Date.now() - startTimeMs,
+      };
+    } catch { /* fallback to LLM */ }
+  }
+
+  // ── Pattern: Switch model/brain ──
+  if (/เปลี่ยน.*(?:โมเดล|สมอง|model|brain|llm)|switch.*(?:model|brain)|ใช้.*(?:โมเดล|สมอง)/i.test(lower)) {
+    try {
+      const { listConfiguredProviders, setDefaultProvider } = await import("./llm-connector.js");
+      const providers = listConfiguredProviders().filter((p: any) => p.isActive);
+      // Check if user specified a model name
+      let switched = false;
+      for (const p of providers) {
+        const names = [p.modelName, p.modelId, p.providerId, p.providerName].filter(Boolean).map((n: string) => n.toLowerCase());
+        if (names.some((n: string) => lower.includes(n))) {
+          setDefaultProvider(p.providerId, p.modelId);
+          switched = true;
+          return {
+            reply: `เปลี่ยนสมองเป็น ${p.modelName || p.modelId} (${p.providerId}) แล้วครับ!`,
+            toolsUsed: ["soul_llm_default"],
+            iterations: 1,
+            totalTokens: 0,
+            model: "auto-action",
+            provider: "soul-auto",
+            responseMs: Date.now() - startTimeMs,
+          };
+        }
+      }
+      // No specific model mentioned — show available options
+      if (!switched) {
+        const list = providers.map((p: any, i: number) =>
+          `${i + 1}. ${p.modelName || p.modelId} (${p.providerId})${p.isDefault ? " ← ใช้อยู่" : ""}`
+        ).join("\n");
+        return {
+          reply: `สมองที่มีอยู่:\n\n${list}\n\nบอกชื่อโมเดลที่ต้องการใช้ได้เลยครับ เช่น "เปลี่ยนเป็น gpt-4o"`,
+          toolsUsed: ["soul_llm_list"],
+          iterations: 1,
+          totalTokens: 0,
+          model: "auto-action",
+          provider: "soul-auto",
+          responseMs: Date.now() - startTimeMs,
+        };
+      }
+    } catch { /* fallback to LLM */ }
+  }
+
+  // ── Pattern: "What can you do?" / capability query ──
+  if (/ทำอะไรได้|ทำอะไรเป็น|ความสามารถ|what can you do|your capabilities|help me/i.test(lower)
+    && !/ไม่ได้|can't|cannot/i.test(lower)) {
+    return {
+      reply: `ผม Soul v${SOUL_VERSION} ทำได้หลายอย่างครับ:\n\n` +
+        `📁 **จัดการไฟล์** — อ่าน, ค้นหา, ดูไฟล์ในคอมคุณ\n` +
+        `🧠 **จำทุกอย่าง** — บันทึก, ค้นหา, เรียกคืนความทรงจำ\n` +
+        `🔗 **เชื่อมต่อบริการ** — Telegram, Discord, LLM APIs\n` +
+        `📊 **สร้างเอกสาร** — chart, diagram, report, presentation\n` +
+        `🔍 **ค้นหาเว็บ** — หาข้อมูลจากอินเทอร์เน็ต\n` +
+        `⏱️ **จับเวลา** — track time, productivity\n` +
+        `🎯 **ตั้งเป้าหมาย** — goals, habits, daily reflections\n` +
+        `💡 **คิดวิเคราะห์** — 9 thinking frameworks\n` +
+        `👥 **จำคน** — จดจำคนที่คุณพูดถึง\n` +
+        `📚 **เรียนรู้** — learning paths, research\n\n` +
+        `รวม 308 tools ครับ! ถามอะไรมาได้เลย`,
+      toolsUsed: [],
+      iterations: 0,
+      totalTokens: 0,
+      model: "auto-action",
+      provider: "soul-auto",
+      confidence: { overall: 99, label: "very high", emoji: "🟢" },
+      responseMs: Date.now() - startTimeMs,
+    };
+  }
+
   // ── Pattern: Token/Key + service name → soul_connect ──
   // Detect: "TOKEN ต่อ telegram", "connect discord WEBHOOK_URL", etc.
   const connectPatterns = [
@@ -853,23 +940,33 @@ export async function runAgentLoop(
     const hasTools = toolDefs.length > 0;
     const useStreaming = !hasTools || i > 0;
 
-    let response: LLMResponse;
-    if (useStreaming && !hasTools) {
-      // Pure streaming — no tools, just text
-      response = await chatStream(messages, {
-        providerId: options?.providerId,
-        modelId: options?.modelId,
-        temperature: options?.temperature,
-        onToken: (token) => options?.onProgress?.({ type: "streaming_token", token }),
-      });
-    } else {
-      // Tool-capable call (non-streaming)
-      response = await chat(messages, {
-        providerId: options?.providerId,
-        modelId: options?.modelId,
-        tools: toolDefs.length > 0 ? toolDefs : undefined,
-        temperature: options?.temperature,
-      });
+    let response!: LLMResponse;
+    const MAX_LLM_RETRIES = 2;
+    for (let retry = 0; retry <= MAX_LLM_RETRIES; retry++) {
+      try {
+        if (useStreaming && !hasTools) {
+          response = await chatStream(messages, {
+            providerId: options?.providerId,
+            modelId: options?.modelId,
+            temperature: options?.temperature,
+            onToken: (token) => options?.onProgress?.({ type: "streaming_token", token }),
+          });
+        } else {
+          response = await chat(messages, {
+            providerId: options?.providerId,
+            modelId: options?.modelId,
+            tools: toolDefs.length > 0 ? toolDefs : undefined,
+            temperature: options?.temperature,
+          });
+        }
+        break; // success
+      } catch (llmErr: any) {
+        if (retry < MAX_LLM_RETRIES && /timeout|ECONNRESET|ECONNREFUSED|fetch failed|network/i.test(llmErr.message)) {
+          await new Promise(r => setTimeout(r, 1000 * (retry + 1))); // backoff
+          continue;
+        }
+        throw llmErr; // rethrow if not retryable or max retries
+      }
     }
 
     totalTokens += response.usage.totalTokens;
@@ -3933,7 +4030,7 @@ function ensureSessionInsightsTable() {
  * Extract insights from a session after it ends or periodically.
  * Called when session changes or on /new command.
  */
-export function extractSessionInsights(sessionId: string) {
+export async function extractSessionInsights(sessionId: string) {
   try {
     const rawDb = getRawDb();
     ensureConversationTable();
@@ -4001,9 +4098,9 @@ export function extractSessionInsights(sessionId: string) {
 
     // Also auto-remember key topics in global memory
     try {
-      const { remember } = require("../memory/memory-engine.js");
+      const { remember } = await import("../memory/memory-engine.js");
       if (messages.length >= 4) {
-        remember({
+        await remember({
           content: `Session insight: ${topic} — ${insight.substring(0, 200)}`,
           type: "learning",
           tags: ["cross-session", "auto-insight"],
@@ -4014,13 +4111,13 @@ export function extractSessionInsights(sessionId: string) {
 
     // UPGRADE #18: Active learning — extract patterns from this session
     try {
-      const { extractLearningsFromSession } = require("./active-learning.js");
+      const { extractLearningsFromSession } = await import("./active-learning.js");
       extractLearningsFromSession(messages);
     } catch { /* ok */ }
 
     // UPGRADE #18: Run spaced repetition on session end
     try {
-      const { runSpacedRepetition } = require("./active-learning.js");
+      const { runSpacedRepetition } = await import("./active-learning.js");
       runSpacedRepetition();
     } catch { /* ok */ }
   } catch { /* ok */ }
