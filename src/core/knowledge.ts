@@ -75,7 +75,14 @@ export async function addKnowledge(input: {
     source: `knowledge-base:${input.source || "observation"}`,
   });
 
-  return mapKnowledge(row);
+  const entry = mapKnowledge(row);
+
+  // UPGRADE #7: Auto-link with existing knowledge
+  try {
+    await autoLinkKnowledge(entry.id);
+  } catch { /* non-critical */ }
+
+  return entry;
 }
 
 export async function getKnowledge(
@@ -195,5 +202,217 @@ function mapKnowledge(row: any): KnowledgeEntry {
     tags: row.tags,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+// ============================================================
+// UPGRADE #7: Knowledge Graph — Node+Edge relationships
+// ============================================================
+
+export type EdgeType = "RELATED_TO" | "SUPPORTS" | "CONTRADICTS" | "PART_OF" | "USED_BY" | "LEADS_TO" | "DEPENDS_ON";
+
+export interface KnowledgeEdge {
+  id: number;
+  fromId: number;
+  toId: number;
+  edgeType: EdgeType;
+  weight: number;
+  context: string;
+  createdAt: string;
+}
+
+function ensureKnowledgeEdgesTable() {
+  const rawDb = getRawDb();
+  rawDb.exec(`
+    CREATE TABLE IF NOT EXISTS soul_knowledge_edges (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      from_id INTEGER NOT NULL,
+      to_id INTEGER NOT NULL,
+      edge_type TEXT NOT NULL DEFAULT 'RELATED_TO',
+      weight REAL NOT NULL DEFAULT 1.0,
+      context TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(from_id, to_id, edge_type)
+    )
+  `);
+  rawDb.exec(`
+    CREATE INDEX IF NOT EXISTS idx_ke_from ON soul_knowledge_edges(from_id)
+  `);
+  rawDb.exec(`
+    CREATE INDEX IF NOT EXISTS idx_ke_to ON soul_knowledge_edges(to_id)
+  `);
+}
+
+/**
+ * Add an edge between two knowledge entries
+ */
+export function addKnowledgeEdge(
+  fromId: number,
+  toId: number,
+  edgeType: EdgeType,
+  context = "",
+  weight = 1.0,
+): KnowledgeEdge | null {
+  ensureKnowledgeEdgesTable();
+  const rawDb = getRawDb();
+
+  try {
+    const row = rawDb.prepare(
+      `INSERT INTO soul_knowledge_edges (from_id, to_id, edge_type, weight, context)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(from_id, to_id, edge_type) DO UPDATE SET weight = weight + 0.1, context = ?
+       RETURNING *`
+    ).get(fromId, toId, edgeType, weight, context, context) as any;
+
+    return row ? mapEdge(row) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Get all edges for a knowledge entry (both directions)
+ */
+export function getKnowledgeEdges(knowledgeId: number): KnowledgeEdge[] {
+  ensureKnowledgeEdgesTable();
+  const rawDb = getRawDb();
+
+  const rows = rawDb.prepare(
+    `SELECT * FROM soul_knowledge_edges WHERE from_id = ? OR to_id = ? ORDER BY weight DESC`
+  ).all(knowledgeId, knowledgeId) as any[];
+
+  return rows.map(mapEdge);
+}
+
+/**
+ * Traverse the knowledge graph — find connected knowledge up to N hops
+ */
+export function traverseKnowledgeGraph(
+  startId: number,
+  maxDepth = 2,
+  edgeTypes?: EdgeType[],
+): Array<{ knowledge: KnowledgeEntry; depth: number; via: EdgeType }> {
+  ensureKnowledgeTable();
+  ensureKnowledgeEdgesTable();
+  const rawDb = getRawDb();
+
+  const visited = new Set<number>([startId]);
+  const results: Array<{ knowledge: KnowledgeEntry; depth: number; via: EdgeType }> = [];
+  let frontier = [startId];
+
+  for (let depth = 1; depth <= maxDepth; depth++) {
+    const nextFrontier: number[] = [];
+
+    for (const nodeId of frontier) {
+      let query = `SELECT * FROM soul_knowledge_edges WHERE from_id = ? OR to_id = ?`;
+      const params: any[] = [nodeId, nodeId];
+
+      if (edgeTypes && edgeTypes.length > 0) {
+        const placeholders = edgeTypes.map(() => "?").join(",");
+        query += ` AND edge_type IN (${placeholders})`;
+        params.push(...edgeTypes);
+      }
+
+      const edges = rawDb.prepare(query).all(...params) as any[];
+
+      for (const edge of edges) {
+        const neighborId = edge.from_id === nodeId ? edge.to_id : edge.from_id;
+        if (visited.has(neighborId)) continue;
+        visited.add(neighborId);
+
+        const kRow = rawDb.prepare("SELECT * FROM soul_knowledge WHERE id = ?").get(neighborId) as any;
+        if (kRow) {
+          results.push({
+            knowledge: mapKnowledge(kRow),
+            depth,
+            via: edge.edge_type,
+          });
+          nextFrontier.push(neighborId);
+        }
+      }
+    }
+
+    frontier = nextFrontier;
+    if (frontier.length === 0) break;
+  }
+
+  return results;
+}
+
+/**
+ * Auto-link new knowledge with existing entries based on keyword overlap
+ */
+export async function autoLinkKnowledge(newEntryId: number): Promise<number> {
+  ensureKnowledgeTable();
+  ensureKnowledgeEdgesTable();
+  const rawDb = getRawDb();
+
+  const newEntry = rawDb.prepare("SELECT * FROM soul_knowledge WHERE id = ?").get(newEntryId) as any;
+  if (!newEntry) return 0;
+
+  // Find potentially related entries by searching keywords
+  const titleWords = newEntry.title.toLowerCase().split(/\s+/).filter((w: string) => w.length > 3);
+  const contentWords = newEntry.content.toLowerCase().split(/\s+/).filter((w: string) => w.length > 4).slice(0, 10);
+  const searchTerms = [...new Set([...titleWords, ...contentWords])];
+
+  let linked = 0;
+  const seen = new Set<number>([newEntryId]);
+
+  for (const term of searchTerms.slice(0, 5)) {
+    const matches = rawDb.prepare(
+      `SELECT * FROM soul_knowledge WHERE id != ? AND (title LIKE ? OR content LIKE ?) LIMIT 3`
+    ).all(newEntryId, `%${term}%`, `%${term}%`) as any[];
+
+    for (const match of matches) {
+      if (seen.has(match.id)) continue;
+      seen.add(match.id);
+
+      // Determine edge type
+      let edgeType: EdgeType = "RELATED_TO";
+      if (match.category === newEntry.category) edgeType = "RELATED_TO";
+      if (newEntry.content.toLowerCase().includes(match.title.toLowerCase())) edgeType = "DEPENDS_ON";
+
+      addKnowledgeEdge(newEntryId, match.id, edgeType, `auto-linked via keyword: ${term}`);
+      linked++;
+
+      if (linked >= 5) return linked; // limit auto-links
+    }
+  }
+
+  return linked;
+}
+
+/**
+ * Get knowledge graph stats
+ */
+export function getKnowledgeGraphStats(): { nodes: number; edges: number; avgConnections: number; isolatedNodes: number } {
+  ensureKnowledgeTable();
+  ensureKnowledgeEdgesTable();
+  const rawDb = getRawDb();
+
+  const nodes = (rawDb.prepare("SELECT COUNT(*) as c FROM soul_knowledge").get() as any)?.c || 0;
+  const edges = (rawDb.prepare("SELECT COUNT(*) as c FROM soul_knowledge_edges").get() as any)?.c || 0;
+
+  const connectedNodes = (rawDb.prepare(
+    "SELECT COUNT(DISTINCT id) as c FROM (SELECT from_id as id FROM soul_knowledge_edges UNION SELECT to_id as id FROM soul_knowledge_edges)"
+  ).get() as any)?.c || 0;
+
+  return {
+    nodes,
+    edges,
+    avgConnections: nodes > 0 ? Math.round((edges * 2 / nodes) * 10) / 10 : 0,
+    isolatedNodes: nodes - connectedNodes,
+  };
+}
+
+function mapEdge(row: any): KnowledgeEdge {
+  return {
+    id: row.id,
+    fromId: row.from_id,
+    toId: row.to_id,
+    edgeType: row.edge_type,
+    weight: row.weight,
+    context: row.context,
+    createdAt: row.created_at,
   };
 }

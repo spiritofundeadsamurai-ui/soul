@@ -125,6 +125,9 @@ export function cacheResponse(query: string, response: string, tokensUsed: numbe
 
 export async function knowledgeFirstLookup(query: string): Promise<{ found: boolean; answer: string; source: string } | null> {
   try {
+    // Skip for very short/simple messages — not worth searching
+    if (query.trim().length < 10) return null;
+
     // 1. Search memories (with scores for threshold filtering)
     const memories = await hybridSearchWithScores(query, 3);
     const strongMatch = memories.find((m) => m.score > 0.8);
@@ -263,7 +266,10 @@ function trackSavings(data: {
         data.cascadeSavings || 0
       );
     }
-  } catch { /* ignore tracking errors */ }
+  } catch (err: any) {
+    // Log but don't crash on tracking errors — non-critical for main flow
+    if (process.env.DEBUG) console.error("[SmartCache] tracking error:", err.message);
+  }
 }
 
 export function trackTokensUsed(tokens: number) {

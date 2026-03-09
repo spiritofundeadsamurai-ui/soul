@@ -45,6 +45,19 @@ import { dirname, join } from "path";
 const app = new Hono();
 const PORT = parseInt(process.env.SOUL_PORT || "47779", 10);
 
+// Security headers — prevent XSS, clickjacking, MIME sniffing
+app.use("*", async (c, next) => {
+  await next();
+  c.header("X-Frame-Options", "DENY");
+  c.header("X-Content-Type-Options", "nosniff");
+  c.header("X-XSS-Protection", "1; mode=block");
+  c.header("Referrer-Policy", "strict-origin-when-cross-origin");
+  // CSP: allow self + inline styles for web UI (Canvas needs it)
+  if (c.req.path === "/" || c.req.path === "/office" || c.req.path === "/chat" || c.req.path === "/community") {
+    c.header("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' data:;");
+  }
+});
+
 // CORS — allow local + LAN access (for mobile/tablet on same network)
 // All data endpoints require auth token, so CORS is safe
 const ALLOWED_ORIGINS = (process.env.SOUL_CORS_ORIGINS || "").split(",").filter(Boolean);
@@ -162,6 +175,68 @@ app.get("/api/philosophy", (c) => {
 
 app.get("/api/identity", (c) => {
   return c.json({ identity: soul.getIdentity() });
+});
+
+// Soul Children — public endpoint to list team members
+app.get("/api/children", async (c) => {
+  try {
+    const { listChildren } = await import("./core/soul-family.js");
+    const children = await listChildren();
+    return c.json({
+      children: children.map(ch => ({
+        name: ch.name,
+        specialty: ch.specialty,
+        personality: ch.personality,
+        abilities: ch.abilities,
+        level: ch.level,
+        generation: ch.generation,
+        dna: ch.dna,
+        memoryCount: ch.memoryCount,
+        isActive: ch.isActive,
+      })),
+      count: children.length,
+    });
+  } catch {
+    return c.json({ children: [], count: 0 });
+  }
+});
+
+// UPGRADE #16: Energy report endpoint (requires auth — contains usage data)
+app.get("/api/energy", authMiddleware(), async (c) => {
+  try {
+    const { getEnergyReport } = await import("./core/energy-awareness.js");
+    return c.json(getEnergyReport());
+  } catch {
+    return c.json({ error: "Energy tracking not available" }, 500);
+  }
+});
+
+// UPGRADE #8: Dreams endpoint (requires auth — contains knowledge insights)
+app.get("/api/dreams", authMiddleware(), async (c) => {
+  try {
+    const { getUnsharedDreams, getDreamStats } = await import("./core/soul-dreams.js");
+    const limit = Math.min(Math.max(parseInt(c.req.query("limit") || "10", 10) || 10, 1), 50);
+    const dreams = getUnsharedDreams(limit);
+    const stats = getDreamStats();
+    return c.json({ dreams, stats });
+  } catch {
+    return c.json({ dreams: [], stats: {} });
+  }
+});
+
+// UPGRADE #15: Context handoff endpoint (requires auth — exports full context)
+app.get("/api/context-handoff", authMiddleware(), async (c) => {
+  try {
+    const { exportContext, formatContextForExport } = await import("./core/context-handoff.js");
+    const format = c.req.query("format");
+    const packet = exportContext();
+    if (format === "text") {
+      return c.text(formatContextForExport(packet));
+    }
+    return c.json(packet);
+  } catch {
+    return c.json({ error: "Context handoff not available" }, 500);
+  }
 });
 
 // Brain Map — public endpoint for real visualization data
@@ -315,61 +390,84 @@ app.get("/api/dashboard", authMiddleware(), async (c) => {
 });
 
 app.get("/api/memories/recent", authMiddleware(), async (c) => {
-  const limit = parseInt(c.req.query("limit") || "20", 10);
-  const memories = await getRecentMemories(Math.min(limit, 50));
-  return c.json({ count: memories.length, memories });
+  try {
+    const limit = Math.min(Math.max(parseInt(c.req.query("limit") || "20", 10), 1), 50);
+    const memories = await getRecentMemories(limit);
+    return c.json({ count: memories.length, memories });
+  } catch (e) { console.error("memories/recent error:", e); return c.json({ count: 0, memories: [] }); }
 });
 
 app.get("/api/knowledge/list", authMiddleware(), async (c) => {
-  const category = c.req.query("category");
-  const searchQ = c.req.query("q");
-  const limit = parseInt(c.req.query("limit") || "20", 10);
-  const entries = await getKnowledge(category || undefined, searchQ || undefined, Math.min(limit, 50));
-  return c.json({ count: entries.length, entries });
+  try {
+    const category = c.req.query("category");
+    const searchQ = c.req.query("q");
+    const limit = Math.min(Math.max(parseInt(c.req.query("limit") || "20", 10), 1), 50);
+    const entries = await getKnowledge(category || undefined, searchQ || undefined, limit);
+    return c.json({ count: entries.length, entries });
+  } catch (e) { console.error("knowledge/list error:", e); return c.json({ count: 0, entries: [] }); }
 });
 
 app.get("/api/mood/history", authMiddleware(), async (c) => {
-  const limit = parseInt(c.req.query("limit") || "20", 10);
-  const history = await getMoodHistory(Math.min(limit, 50));
-  return c.json({ count: history.length, entries: history });
+  try {
+    const limit = Math.min(Math.max(parseInt(c.req.query("limit") || "20", 10), 1), 50);
+    const history = await getMoodHistory(limit);
+    return c.json({ count: history.length, entries: history });
+  } catch (e) { console.error("mood/history error:", e); return c.json({ count: 0, entries: [] }); }
 });
 
 app.get("/api/mood/trends", authMiddleware(), async (c) => {
-  const trends = await analyzeMoodTrends();
-  return c.json(trends);
+  try {
+    const trends = await analyzeMoodTrends();
+    return c.json(trends);
+  } catch (e) { console.error("mood/trends error:", e); return c.json({ average: 0, trend: "stable" }); }
 });
 
 app.get("/api/time/today", authMiddleware(), async (c) => {
-  const entries = getTodayEntries();
-  return c.json({ count: entries.length, entries });
+  try {
+    const entries = getTodayEntries();
+    return c.json({ count: entries.length, entries });
+  } catch (e) { console.error("time/today error:", e); return c.json({ count: 0, entries: [] }); }
 });
 
 app.get("/api/time/summary", authMiddleware(), async (c) => {
-  const days = parseInt(c.req.query("days") || "7", 10);
-  const summary = getTimeSummary(Math.min(days, 90));
-  return c.json(summary);
+  try {
+    const days = Math.min(Math.max(parseInt(c.req.query("days") || "7", 10), 1), 90);
+    const summary = getTimeSummary(days);
+    return c.json(summary);
+  } catch (e) { console.error("time/summary error:", e); return c.json({}); }
 });
 
 app.get("/api/people/list", authMiddleware(), async (c) => {
-  const people = listPeople();
-  return c.json({ count: people.length, people });
+  try {
+    const people = listPeople();
+    return c.json({ count: people.length, people });
+  } catch (e) { console.error("people/list error:", e); return c.json({ count: 0, people: [] }); }
 });
 
 app.get("/api/learning/paths", authMiddleware(), async (c) => {
-  const paths = getLearningPaths();
-  return c.json({ count: paths.length, paths });
+  try {
+    const paths = getLearningPaths();
+    return c.json({ count: paths.length, paths });
+  } catch (e) { console.error("learning/paths error:", e); return c.json({ count: 0, paths: [] }); }
 });
 
 app.get("/api/notes/list", authMiddleware(), async (c) => {
-  const type = c.req.query("type") as any;
-  const notes = getQuickNotes(type || undefined);
-  return c.json({ count: notes.length, notes });
+  try {
+    const validTypes = ["note", "idea", "bookmark", "todo"];
+    const rawType = c.req.query("type");
+    const type = rawType && validTypes.includes(rawType) ? rawType : undefined;
+    const notes = getQuickNotes(type as any);
+    return c.json({ count: notes.length, notes });
+  } catch (e) { console.error("notes/list error:", e); return c.json({ count: 0, notes: [] }); }
 });
 
 app.get("/api/digest", authMiddleware(), async (c) => {
-  const date = c.req.query("date");
-  const digest = await generateDailyDigest(date || undefined);
-  return c.json(digest);
+  try {
+    const rawDate = c.req.query("date");
+    const date = rawDate && /^\d{4}-\d{2}-\d{2}$/.test(rawDate) ? rawDate : undefined;
+    const digest = await generateDailyDigest(date);
+    return c.json(digest);
+  } catch (e) { console.error("digest error:", e); return c.json({ date: new Date().toISOString().split("T")[0], entries: [] }); }
 });
 
 app.get("/api/soul-family", authMiddleware(), async (c) => {
@@ -472,18 +570,27 @@ app.post("/api/remember", authMiddleware(), async (c) => {
   const body = await c.req.json();
   const { content, type, tags, source } = body;
 
-  if (!content) {
+  if (!content || typeof content !== "string") {
     return c.json({ error: "Content is required" }, 400);
   }
+  if (content.length > 10000) {
+    return c.json({ error: "Content too long (max 10,000 characters)" }, 400);
+  }
+  const validTypes = ["conversation", "knowledge", "preference", "event", "wisdom", "learning", "task"];
+  const safeType = validTypes.includes(type) ? type : "knowledge";
 
-  const entry = await remember({
-    content,
-    type: type || "knowledge",
-    tags: tags || [],
-    source,
-  });
-
-  return c.json({ success: true, memory: entry });
+  try {
+    const entry = await remember({
+      content: content.substring(0, 10000),
+      type: safeType,
+      tags: Array.isArray(tags) ? tags.slice(0, 20).map((t: any) => String(t).substring(0, 50)) : [],
+      source: typeof source === "string" ? source.substring(0, 100) : undefined,
+    });
+    return c.json({ success: true, memory: entry });
+  } catch (e) {
+    console.error("remember error:", e);
+    return c.json({ error: "Failed to save memory" }, 500);
+  }
 });
 
 app.get("/api/memories", authMiddleware(), async (c) => {
@@ -491,7 +598,7 @@ app.get("/api/memories", authMiddleware(), async (c) => {
   const limit = parseInt(c.req.query("limit") || "20", 10);
   const offset = parseInt(c.req.query("offset") || "0", 10);
 
-  const results = await list(type || undefined, limit, offset);
+  const results = await list(type || undefined, Math.min(Math.max(limit, 1), 100), Math.max(offset, 0));
   return c.json({ count: results.length, memories: results });
 });
 
@@ -527,7 +634,7 @@ app.get("/api/wisdom", authMiddleware(), async (c) => {
 });
 
 app.get("/api/recap", authMiddleware(), async (c) => {
-  const limit = parseInt(c.req.query("limit") || "10", 10);
+  const limit = Math.min(Math.max(parseInt(c.req.query("limit") || "10", 10), 1), 50);
   const recent = await getRecentMemories(limit);
   const stats = await getMemoryStats();
 
@@ -535,7 +642,7 @@ app.get("/api/recap", authMiddleware(), async (c) => {
 });
 
 app.get("/api/learnings", authMiddleware(), async (c) => {
-  const limit = parseInt(c.req.query("limit") || "20", 10);
+  const limit = Math.min(Math.max(parseInt(c.req.query("limit") || "20", 10), 1), 100);
   const results = await getLearnings(limit);
   return c.json({ count: results.length, learnings: results });
 });
@@ -584,11 +691,23 @@ You speak naturally — not robotic. You are a companion, not just an assistant.
 
 app.post("/api/chat", authMiddleware(), async (c) => {
   try {
+    // Rate limit: max 15 requests/minute per IP
+    const ip = c.req.header("x-forwarded-for") || c.req.header("x-real-ip") || "unknown";
+    const rl = checkRateLimit(`chat:${ip}`, 15, 60000);
+    if (!rl.allowed) {
+      return c.json({ error: "Too many requests. Please slow down.", retryAfter: Math.ceil(rl.resetIn / 1000) }, 429);
+    }
+
     const body = await c.req.json();
-    const { message, sessionId, providerId, modelId, temperature, maxIterations } = body;
+    const { message, sessionId, providerId, modelId, temperature, maxIterations, childName } = body;
 
     if (!message) {
       return c.json({ error: "Message is required" }, 400);
+    }
+
+    // Input validation: message length limit (prevent token abuse)
+    if (typeof message !== "string" || message.length > 50000) {
+      return c.json({ error: "Message too long (max 50,000 characters)" }, 400);
     }
 
     // Check LLM is configured
@@ -615,12 +734,14 @@ app.post("/api/chat", authMiddleware(), async (c) => {
     saveConversationTurn(sid, "user", message);
 
     // Run agent loop — Soul thinks, uses tools, and responds
+    // If childName is provided, route to that Soul Child
     const result = await runAgentLoop(message, {
       providerId,
       modelId,
-      maxIterations: maxIterations || 10,
-      temperature: temperature ?? 0.7,
+      maxIterations: Math.min(Math.max(parseInt(maxIterations) || 10, 1), 20),
+      temperature: Math.min(Math.max(parseFloat(temperature) || 0.7, 0), 2),
       history,
+      childName: typeof childName === "string" ? childName.substring(0, 100) : undefined,
     });
 
     // Save Soul's reply
@@ -634,6 +755,8 @@ app.post("/api/chat", authMiddleware(), async (c) => {
       toolsUsed: result.toolsUsed,
       totalTokens: result.totalTokens,
       sessionId: sid,
+      confidence: result.confidence || null,
+      responseMs: result.responseMs || null,
     });
   } catch (err: any) {
     console.error("[Soul] Chat error:", err.message);

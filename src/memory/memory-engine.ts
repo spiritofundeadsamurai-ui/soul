@@ -3,9 +3,11 @@ import { memories } from "../db/schema.js";
 import { eq, desc, and, sql, count } from "drizzle-orm";
 import { TfIdfIndex } from "./tfidf.js";
 
-// Semantic search index — rebuilt on first search
+// Semantic search index — rebuilt on first search, invalidated periodically
 let _tfidfIndex: TfIdfIndex | null = null;
 let _tfidfBuilt = false;
+let _tfidfLastBuilt = 0;
+const TFIDF_REBUILD_INTERVAL_MS = 5 * 60 * 1000; // Rebuild every 5 minutes to pick up new memories
 
 export type MemoryType = "conversation" | "knowledge" | "learning" | "wisdom";
 
@@ -83,8 +85,9 @@ export async function hybridSearch(
   query: string,
   limit: number = 10
 ): Promise<MemoryEntry[]> {
-  // Build TF-IDF index if not ready
-  if (!_tfidfBuilt) {
+  // Build TF-IDF index if not ready or stale
+  const now = Date.now();
+  if (!_tfidfBuilt || now - _tfidfLastBuilt > TFIDF_REBUILD_INTERVAL_MS) {
     _tfidfIndex = new TfIdfIndex();
     const rawDb = getRawDb();
     const allDocs = rawDb
@@ -94,6 +97,7 @@ export async function hybridSearch(
       _tfidfIndex.add(doc.id, `${doc.content} ${doc.tags || ""}`);
     }
     _tfidfBuilt = true;
+    _tfidfLastBuilt = now;
   }
 
   // Step 1: FTS5 keyword search (fast, broad)
@@ -122,13 +126,21 @@ export async function hybridSearch(
     allIds.add(ftsResults[i].id);
   }
 
-  // Add semantic-only results (not in FTS)
-  for (const sem of semanticResults) {
-    if (!allIds.has(sem.id as number)) {
-      const entry = await recall(sem.id as number);
-      if (entry && entry.isActive) {
-        combined.push({ entry, score: sem.score * 0.4 });
-      }
+  // Add semantic-only results (not in FTS) — batch fetch to avoid N+1 queries
+  const semanticOnlyIds = semanticResults
+    .filter(sem => !allIds.has(sem.id as number))
+    .map(sem => sem.id as number);
+
+  if (semanticOnlyIds.length > 0) {
+    const rawDb = getRawDb();
+    const placeholders = semanticOnlyIds.map(() => "?").join(",");
+    const rows = rawDb
+      .prepare(`SELECT * FROM memories WHERE id IN (${placeholders}) AND is_active = 1`)
+      .all(...semanticOnlyIds) as any[];
+    for (const row of rows) {
+      const entry = mapRow(row);
+      const semScore = semanticScores.get(entry.id) || 0;
+      combined.push({ entry, score: semScore * 0.4 });
     }
   }
 
@@ -145,8 +157,9 @@ export async function hybridSearchWithScores(
   query: string,
   limit: number = 10
 ): Promise<ScoredMemoryEntry[]> {
-  // Build TF-IDF index if not ready
-  if (!_tfidfBuilt) {
+  // Build TF-IDF index if not ready or stale
+  const now2 = Date.now();
+  if (!_tfidfBuilt || now2 - _tfidfLastBuilt > TFIDF_REBUILD_INTERVAL_MS) {
     _tfidfIndex = new TfIdfIndex();
     const rawDb = getRawDb();
     const allDocs = rawDb
@@ -156,6 +169,7 @@ export async function hybridSearchWithScores(
       _tfidfIndex.add(doc.id, `${doc.content} ${doc.tags || ""}`);
     }
     _tfidfBuilt = true;
+    _tfidfLastBuilt = now2;
   }
 
   let ftsResults: MemoryEntry[] = [];
@@ -177,12 +191,21 @@ export async function hybridSearchWithScores(
     allIds.add(ftsResults[i].id);
   }
 
-  for (const sem of semanticResults) {
-    if (!allIds.has(sem.id as number)) {
-      const entry = await recall(sem.id as number);
-      if (entry && entry.isActive) {
-        combined.push({ ...entry, score: sem.score * 0.4 });
-      }
+  // Batch fetch semantic-only results to avoid N+1 queries
+  const semanticOnlyIds = semanticResults
+    .filter(sem => !allIds.has(sem.id as number))
+    .map(sem => sem.id as number);
+
+  if (semanticOnlyIds.length > 0) {
+    const rawDb2 = getRawDb();
+    const placeholders = semanticOnlyIds.map(() => "?").join(",");
+    const rows = rawDb2
+      .prepare(`SELECT * FROM memories WHERE id IN (${placeholders}) AND is_active = 1`)
+      .all(...semanticOnlyIds) as any[];
+    for (const row of rows) {
+      const entry = mapRow(row);
+      const semScore = semanticScores.get(entry.id) || 0;
+      combined.push({ ...entry, score: semScore * 0.4 });
     }
   }
 

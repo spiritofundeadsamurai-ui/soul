@@ -142,8 +142,8 @@ export function registerGoalAutopilotTools(server: McpServer) {
   );
 
   server.tool(
-    "soul_goals",
-    "Dashboard of all goals — active, completed, paused, blocked items.",
+    "soul_goals_dashboard",
+    "Dashboard of all autopilot goals — active, completed, paused, blocked items.",
     {
       status: z.string().optional().describe("Filter by status: active, completed, paused, abandoned"),
     },

@@ -49,6 +49,7 @@ import { registerMediaCreatorTools } from "./tools/media-creator.js";
 import { registerWebSearchTools } from "./tools/web-search.js";
 import { registerVideoCreatorTools } from "./tools/video-creator.js";
 import { registerWsNotificationTools } from "./tools/ws-notifications.js";
+import { registerMasterProfileTools } from "./tools/master-profile.js";
 
 async function main() {
   // Initialize Soul
@@ -57,7 +58,7 @@ async function main() {
   // Create MCP server
   const server = new McpServer({
     name: "soul",
-    version: "1.0.0",
+    version: "1.7.0",
   });
 
   // Register all tools
@@ -107,6 +108,7 @@ async function main() {
   registerWebSearchTools(server);
   registerVideoCreatorTools(server);
   registerWsNotificationTools(server);
+  registerMasterProfileTools(server);
 
   // Log startup
   if (needsSetup) {

@@ -108,10 +108,73 @@ function ensureMoodTable() {
 }
 
 /**
- * Detect emotion from text
+ * Detect emotion from text — UPGRADE #6: LLM-based + keyword fallback
+ *
+ * Strategy:
+ * 1. Try LLM classification (accurate, handles negation/sarcasm)
+ * 2. Fall back to keyword matching if LLM unavailable
  */
 export function detectEmotion(text: string): { mood: string; confidence: number } {
+  // Keyword-based detection (synchronous fallback — always available)
+  return detectEmotionKeyword(text);
+}
+
+/**
+ * LLM-based emotion detection (async, more accurate)
+ * Handles negation ("ไม่มีความสุข" = sad), sarcasm, complex emotions
+ */
+export async function detectEmotionLLM(text: string): Promise<{ mood: string; confidence: number; reason: string }> {
+  try {
+    const { chat } = await import("./llm-connector.js");
+    const response = await chat(
+      [
+        {
+          role: "system",
+          content: `Classify the emotion in the user's message. Output EXACTLY one line in format:
+MOOD:<mood> CONFIDENCE:<0.0-1.0> REASON:<brief reason>
+
+Valid moods: happy, sad, angry, anxious, tired, motivated, confused, grateful, proud, neutral
+
+Examples:
+"ฉันไม่มีความสุขเลย" → MOOD:sad CONFIDENCE:0.8 REASON:negation of happiness indicates sadness
+"555 ตลกมาก" → MOOD:happy CONFIDENCE:0.9 REASON:Thai laughter expression
+"เหนื่อยมากแต่ก็สนุก" → MOOD:motivated CONFIDENCE:0.6 REASON:mixed tired+fun leans positive`,
+        },
+        { role: "user", content: text.substring(0, 300) },
+      ],
+      { temperature: 0.1, maxTokens: 60 },
+    );
+
+    const output = response.content?.trim() || "";
+    const moodMatch = output.match(/MOOD:(\w+)/);
+    const confMatch = output.match(/CONFIDENCE:([\d.]+)/);
+    const reasonMatch = output.match(/REASON:(.+)/);
+
+    if (moodMatch) {
+      const mood = moodMatch[1].toLowerCase();
+      const validMoods = ["happy", "sad", "angry", "anxious", "tired", "motivated", "confused", "grateful", "proud", "neutral"];
+      if (validMoods.includes(mood)) {
+        return {
+          mood,
+          confidence: confMatch ? parseFloat(confMatch[1]) : 0.7,
+          reason: reasonMatch ? reasonMatch[1].trim() : "",
+        };
+      }
+    }
+  } catch { /* LLM unavailable, fall through */ }
+
+  // Fallback to keyword
+  const kw = detectEmotionKeyword(text);
+  return { ...kw, reason: "keyword-based detection" };
+}
+
+function detectEmotionKeyword(text: string): { mood: string; confidence: number } {
   const lowerText = text.toLowerCase();
+
+  // UPGRADE: Handle negation — "ไม่มีความสุข" should NOT match happy
+  const negationPatterns = /ไม่|ไม่ได้|not|don't|doesn't|isn't|never|no longer/;
+  const hasNegation = negationPatterns.test(lowerText);
+
   let bestMood = "neutral";
   let bestScore = 0;
 
@@ -122,6 +185,19 @@ export function detectEmotion(text: string): { mood: string; confidence: number 
         score += 1;
       }
     }
+
+    // If negation detected and this is a positive mood, reduce score
+    if (hasNegation && ["happy", "motivated", "proud", "grateful"].includes(mood)) {
+      score = Math.max(0, score - 2);
+    }
+    // If negation + positive keywords → flip to opposite mood
+    if (hasNegation && score === 0 && mood === "sad") {
+      const happyKeywords = EMOTION_MAP.happy || [];
+      for (const kw of happyKeywords) {
+        if (lowerText.includes(kw)) score += 0.5;
+      }
+    }
+
     if (score > bestScore) {
       bestScore = score;
       bestMood = mood;

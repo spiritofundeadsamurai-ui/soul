@@ -413,6 +413,7 @@ export async function consolidateMemories(): Promise<string> {
 // ============================================
 
 let _schedulerInterval: ReturnType<typeof setInterval> | null = null;
+let _schedulerRunning = false; // Guard against concurrent ticks
 
 /**
  * Parse simple schedule expressions: "every 1h", "every 6h", "every 24h", "every 30m"
@@ -477,6 +478,8 @@ export function startScheduler(): void {
   console.log("[Scheduler] Started — checking every 60s");
 
   _schedulerInterval = setInterval(async () => {
+    if (_schedulerRunning) return; // Skip tick if previous tick is still running
+    _schedulerRunning = true;
     try {
       const rawDb = getRawDb();
       const now = new Date().toISOString().replace("T", " ").substring(0, 19);
@@ -495,6 +498,8 @@ export function startScheduler(): void {
       }
     } catch (err: any) {
       console.error("[Scheduler] Tick error:", err.message);
+    } finally {
+      _schedulerRunning = false;
     }
   }, 60_000);
 }

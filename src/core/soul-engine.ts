@@ -17,7 +17,7 @@ export interface SoulStatus {
 }
 
 const startTime = Date.now();
-const VERSION = "1.0.0";
+const VERSION = "1.7.0";
 
 export class SoulEngine {
   private master: MasterInfo | null = null;

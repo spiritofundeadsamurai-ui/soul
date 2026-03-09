@@ -28,16 +28,24 @@ export function getDb() {
     mkdirSync(SOUL_DIR, { recursive: true });
   }
 
-  _sqlite = new Database(DB_PATH);
+  try {
+    _sqlite = new Database(DB_PATH);
 
-  // Enable WAL mode for better concurrency
-  _sqlite.pragma("journal_mode = WAL");
-  _sqlite.pragma("foreign_keys = ON");
+    // Enable WAL mode for better concurrency
+    _sqlite.pragma("journal_mode = WAL");
+    _sqlite.pragma("foreign_keys = ON");
+    // Reduce SQLITE_BUSY errors with a 5-second timeout
+    _sqlite.pragma("busy_timeout = 5000");
 
-  _db = drizzle(_sqlite, { schema });
+    _db = drizzle(_sqlite, { schema });
 
-  // Create tables
-  initializeDatabase(_sqlite);
+    // Create tables
+    initializeDatabase(_sqlite);
+  } catch (err: any) {
+    _sqlite = null;
+    _db = null;
+    throw new Error(`Failed to open Soul database at ${DB_PATH}: ${err.message}`);
+  }
 
   return _db;
 }

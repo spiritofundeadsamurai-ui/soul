@@ -47,7 +47,17 @@ export async function extractFromUrl(url: string): Promise<MediaAnalysis> {
         Accept: "text/html,application/json,text/plain",
       },
       signal: AbortSignal.timeout(15000),
+      redirect: "follow",
     });
+
+    // Validate final URL after redirects (prevent SSRF via redirect)
+    if (response.url && response.url !== url) {
+      const { checkUrlSafety: recheckUrl } = await import("./web-safety.js");
+      const redirectSafety = await recheckUrl(response.url);
+      if (!redirectSafety.safe) {
+        throw new Error(`URL redirected to unsafe destination: ${response.url} (${redirectSafety.reasons.join(", ")})`);
+      }
+    }
 
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);

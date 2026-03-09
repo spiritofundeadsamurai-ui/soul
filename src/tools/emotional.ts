@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import {
   detectEmotion,
+  detectEmotionLLM,
   logMood,
   getEmpatheticResponse,
   getMoodHistory,
@@ -53,9 +54,10 @@ export function registerEmotionalTools(server: McpServer) {
       text: z.string().describe("Text to analyze for emotional content"),
     },
     async ({ text }) => {
-      const { mood, confidence } = detectEmotion(text);
+      // UPGRADE #6: Use LLM-based emotion detection (handles negation, sarcasm)
+      const { mood, confidence, reason } = await detectEmotionLLM(text);
 
-      if (confidence === 0) {
+      if (confidence === 0 || mood === "neutral") {
         return {
           content: [{
             type: "text" as const,
@@ -69,7 +71,7 @@ export function registerEmotionalTools(server: McpServer) {
       return {
         content: [{
           type: "text" as const,
-          text: `Detected: ${mood} (confidence: ${Math.round(confidence * 100)}%)\n\n${empathy}\n\nWould you like to log this mood? Use soul_mood.`,
+          text: `Detected: ${mood} (confidence: ${Math.round(confidence * 100)}%)${reason ? `\nReason: ${reason}` : ""}\n\n${empathy}\n\nWould you like to log this mood? Use soul_mood.`,
         }],
       };
     }

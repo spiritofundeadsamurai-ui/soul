@@ -150,8 +150,10 @@ const PROVIDER_PRESETS: Record<string, Omit<ProviderConfig, "apiKey" | "isActive
     baseUrl: "https://api.groq.com/openai/v1",
     models: [
       { id: "llama-3.1-8b-instant", name: "llama-3.1-8b-instant", displayName: "Llama 3.1 8B", contextWindow: 131072, maxOutput: 8192, supportsTools: true, supportsVision: false, costInputPerM: 0.05, costOutputPerM: 0.08, tags: ["budget", "ultra-fast"] },
-      { id: "qwen-qwq-32b", name: "qwen-qwq-32b", displayName: "Qwen QwQ 32B", contextWindow: 131072, maxOutput: 8192, supportsTools: true, supportsVision: false, costInputPerM: 0.29, costOutputPerM: 0.59, tags: ["recommended", "fast"] },
+      { id: "qwen/qwen3-32b", name: "qwen/qwen3-32b", displayName: "Qwen 3 32B", contextWindow: 131072, maxOutput: 8192, supportsTools: true, supportsVision: false, costInputPerM: 0.29, costOutputPerM: 0.59, tags: ["recommended", "fast"] },
       { id: "llama-3.3-70b-versatile", name: "llama-3.3-70b-versatile", displayName: "Llama 3.3 70B", contextWindow: 131072, maxOutput: 32768, supportsTools: true, supportsVision: false, costInputPerM: 0.59, costOutputPerM: 0.79, tags: ["quality"] },
+      { id: "meta-llama/llama-4-scout-17b-16e-instruct", name: "meta-llama/llama-4-scout-17b-16e-instruct", displayName: "Llama 4 Scout 17B", contextWindow: 131072, maxOutput: 8192, supportsTools: true, supportsVision: false, costInputPerM: 0.11, costOutputPerM: 0.34, tags: ["fast", "new"] },
+      { id: "moonshotai/kimi-k2-instruct", name: "moonshotai/kimi-k2-instruct", displayName: "Kimi K2", contextWindow: 131072, maxOutput: 8192, supportsTools: true, supportsVision: false, costInputPerM: 0.20, costOutputPerM: 0.40, tags: ["quality", "new"] },
     ],
   },
   deepseek: {
@@ -377,6 +379,160 @@ export async function chat(
   return response;
 }
 
+// ─── Streaming Chat ───
+
+export async function chatStream(
+  messages: LLMMessage[],
+  options?: {
+    providerId?: string;
+    modelId?: string;
+    tools?: LLMToolDef[];
+    temperature?: number;
+    maxTokens?: number;
+    onToken?: (token: string) => void;
+  }
+): Promise<LLMResponse> {
+  ensureLLMTable();
+
+  let config: any;
+  if (options?.providerId && options?.modelId) {
+    const rawDb = getRawDb();
+    config = rawDb.prepare(
+      "SELECT * FROM soul_llm_config WHERE provider_id = ? AND model_id = ? AND is_active = 1"
+    ).get(options.providerId, options.modelId) as any;
+  }
+  if (!config) {
+    const def = getDefaultConfig();
+    if (!def) throw new Error("No LLM configured.");
+    config = { provider_type: def.providerType, base_url: def.baseUrl, api_key: def.apiKey, model_id: def.modelId, provider_id: def.providerId };
+  }
+
+  const temperature = options?.temperature ?? 0.7;
+  const maxTokens = options?.maxTokens ?? 4096;
+
+  // If tools are provided or provider doesn't support streaming well, fall back to non-streaming
+  if (options?.tools && options.tools.length > 0) {
+    const response = await chat(messages, options);
+    return response;
+  }
+
+  // Stream for Ollama/OpenAI-compatible (most common local use)
+  if (config.provider_type === "ollama" || config.provider_type === "openai-compatible") {
+    return await chatStreamOpenAI(config, messages, temperature, maxTokens, options?.onToken);
+  }
+
+  // Fallback to non-streaming for other providers
+  const response = await chat(messages, options);
+  if (options?.onToken && response.content) {
+    options.onToken(response.content);
+  }
+  return response;
+}
+
+async function chatStreamOpenAI(
+  config: any, messages: LLMMessage[], temperature: number, maxTokens: number,
+  onToken?: (token: string) => void,
+): Promise<LLMResponse> {
+  const isOllama = config.provider_type === "ollama";
+  const url = isOllama
+    ? `${config.base_url}/v1/chat/completions`
+    : `${config.base_url}/chat/completions`;
+
+  const isQwen3 = /qwen3/i.test(config.model_id);
+  let formattedMessages = messages.map(formatOpenAIMessage);
+
+  if (isQwen3) {
+    const lastUserIdx = formattedMessages.map((m: any) => m.role).lastIndexOf("user");
+    if (lastUserIdx >= 0) {
+      formattedMessages = [...formattedMessages];
+      formattedMessages[lastUserIdx] = {
+        ...formattedMessages[lastUserIdx],
+        content: "/no_think\n" + (formattedMessages[lastUserIdx].content || ""),
+      };
+    }
+  }
+
+  const body: any = {
+    model: config.model_id,
+    messages: formattedMessages,
+    temperature,
+    max_tokens: maxTokens,
+    stream: true,
+  };
+  if (isOllama) body.options = { num_predict: maxTokens };
+
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (!isOllama && config.api_key) {
+    headers["Authorization"] = `Bearer ${config.api_key}`;
+  }
+
+  const timeoutMs = isOllama ? 300000 : 120000; // Local models need more time
+  const res = await fetch(url, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`${config.provider_id} stream error (${res.status}): ${text.substring(0, 300)}`);
+  }
+
+  const contentParts: string[] = [];
+  let model = config.model_id;
+  let inputTokens = 0;
+  let outputTokens = 0;
+
+  const reader = res.body?.getReader();
+  if (!reader) throw new Error("No response body for streaming");
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || !trimmed.startsWith("data: ")) continue;
+      const data = trimmed.slice(6);
+      if (data === "[DONE]") continue;
+
+      try {
+        const parsed = JSON.parse(data);
+        const delta = parsed.choices?.[0]?.delta;
+        if (delta?.content) {
+          contentParts.push(delta.content);
+          onToken?.(delta.content);
+        }
+        if (parsed.model) model = parsed.model;
+        if (parsed.usage) {
+          inputTokens = parsed.usage.prompt_tokens || 0;
+          outputTokens = parsed.usage.completion_tokens || 0;
+        }
+      } catch { /* skip invalid JSON chunks */ }
+    }
+  }
+
+  const fullContent = contentParts.join("");
+
+  // Estimate tokens if not provided
+  if (outputTokens === 0 && fullContent) {
+    outputTokens = Math.ceil(fullContent.length / 4);
+  }
+
+  trackUsage(config.provider_id, config.model_id, { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens });
+
+  return {
+    content: fullContent || null,
+    toolCalls: [],
+    model,
+    provider: config.provider_id,
+    usage: { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens },
+    finishReason: "stop",
+  };
+}
+
 // ─── Provider Implementations ───
 
 async function chatOllama(
@@ -415,6 +571,7 @@ async function chatOllama(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(300000), // Ollama local models need more time
   });
 
   if (!res.ok) {
@@ -454,7 +611,7 @@ async function chatOpenAI(
     "Authorization": `Bearer ${config.api_key}`,
   };
 
-  const res = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
+  const res = await fetch(url, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(120000) });
 
   if (!res.ok) {
     const text = await res.text();
@@ -520,6 +677,7 @@ async function chatAnthropic(
       "anthropic-version": "2023-06-01",
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(120000),
   });
 
   if (!res.ok) {
@@ -599,6 +757,7 @@ async function chatGemini(
       "x-goog-api-key": config.api_key,
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(120000),
   });
 
   if (!res.ok) {

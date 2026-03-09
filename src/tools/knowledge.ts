@@ -6,6 +6,10 @@ import {
   useKnowledge,
   updateKnowledge,
   getKnowledgeStats,
+  addKnowledgeEdge,
+  traverseKnowledgeGraph,
+  getKnowledgeGraphStats,
+  type EdgeType,
 } from "../core/knowledge.js";
 
 export function registerKnowledgeTools(server: McpServer) {
@@ -141,6 +145,69 @@ export function registerKnowledgeTools(server: McpServer) {
         });
       }
 
+      return { content: [{ type: "text" as const, text }] };
+    }
+  );
+
+  // ─── Knowledge Graph Tools (UPGRADE #7) ───
+
+  server.tool(
+    "soul_knowledge_link",
+    "Create a relationship between two knowledge entries — builds Soul's knowledge graph for deeper understanding.",
+    {
+      fromId: z.number().describe("Source knowledge entry ID"),
+      toId: z.number().describe("Target knowledge entry ID"),
+      edgeType: z.enum(["RELATED_TO", "SUPPORTS", "CONTRADICTS", "PART_OF", "USED_BY", "LEADS_TO", "DEPENDS_ON"]).describe("Type of relationship"),
+      context: z.string().optional().describe("Why these are connected"),
+    },
+    async ({ fromId, toId, edgeType, context }) => {
+      const edge = addKnowledgeEdge(fromId, toId, edgeType as EdgeType, context || "");
+      if (!edge) {
+        return { content: [{ type: "text" as const, text: "Failed to create edge — entries may not exist." }] };
+      }
+      return {
+        content: [{
+          type: "text" as const,
+          text: `Knowledge linked: #${fromId} —[${edgeType}]→ #${toId}${context ? ` (${context})` : ""}\nWeight: ${edge.weight}`,
+        }],
+      };
+    }
+  );
+
+  server.tool(
+    "soul_knowledge_explore",
+    "Traverse Soul's knowledge graph — find connected knowledge up to N hops from a starting point. Discover hidden connections.",
+    {
+      startId: z.number().describe("Starting knowledge entry ID"),
+      maxDepth: z.number().default(2).describe("How many hops to explore (1-3)"),
+      edgeTypes: z.array(z.string()).optional().describe("Filter by edge types"),
+    },
+    async ({ startId, maxDepth, edgeTypes }) => {
+      const results = traverseKnowledgeGraph(
+        startId,
+        Math.min(maxDepth, 3),
+        edgeTypes as EdgeType[] | undefined,
+      );
+
+      if (results.length === 0) {
+        return { content: [{ type: "text" as const, text: `No connected knowledge found from #${startId}. Use soul_knowledge_link to connect entries.` }] };
+      }
+
+      const text = results.map(r =>
+        `[depth ${r.depth}] #${r.knowledge.id} "${r.knowledge.title}" (${r.knowledge.category}, ${Math.round(r.knowledge.confidence * 100)}%)\n  via: ${r.via}\n  ${r.knowledge.content.substring(0, 100)}`
+      ).join("\n\n");
+
+      return { content: [{ type: "text" as const, text: `Knowledge Graph from #${startId} (${results.length} connected):\n\n${text}` }] };
+    }
+  );
+
+  server.tool(
+    "soul_knowledge_graph_stats",
+    "Knowledge graph statistics — nodes, edges, connectivity, isolated entries.",
+    {},
+    async () => {
+      const stats = getKnowledgeGraphStats();
+      const text = `=== Knowledge Graph ===\nNodes: ${stats.nodes}\nEdges: ${stats.edges}\nAvg connections/node: ${stats.avgConnections}\nIsolated nodes: ${stats.isolatedNodes}`;
       return { content: [{ type: "text" as const, text }] };
     }
   );

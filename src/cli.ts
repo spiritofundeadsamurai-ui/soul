@@ -50,17 +50,20 @@ const SESSION_FILE = path.join(SOUL_DIR, "last-session.txt");
 
 let isProcessing = false;
 let turnCount = 0;
+let activeChildName: string | null = null; // null = Soul Core, string = talking to specific child
 
 // Message queue + debounce
 const messageQueue: string[] = [];
 let debounceBuffer: string[] = [];
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-const DEBOUNCE_MS = 1500; // 1.5s — if user types multiple lines quickly, merge them
+const DEBOUNCE_MS = 500; // 0.5s — fast debounce, don't delay user
 
 // ─── Command Definitions ───
 
 const COMMANDS = [
   { cmd: "/new",      desc: "Start a new conversation",        alias: [] },
+  { cmd: "/talk",     desc: "Switch to talk to a Soul Child",  alias: ["/t"] },
+  { cmd: "/team",     desc: "Show all Soul Children",          alias: [] },
   { cmd: "/history",  desc: "Show conversation history",       alias: ["/hist"] },
   { cmd: "/sessions", desc: "List past sessions",              alias: ["/sess"] },
   { cmd: "/status",   desc: "Soul's status",                   alias: [] },
@@ -68,6 +71,12 @@ const COMMANDS = [
   { cmd: "/model",    desc: "Current LLM info",                alias: [] },
   { cmd: "/clear",    desc: "Clear screen",                    alias: ["/cls"] },
   { cmd: "/help",     desc: "Show all commands",               alias: ["/h"] },
+  { cmd: "/energy",   desc: "Soul's energy/cost report",       alias: [] },
+  { cmd: "/dreams",   desc: "Show Soul's dreams & insights",   alias: [] },
+  { cmd: "/handoff",  desc: "Export context for other AIs",     alias: [] },
+  { cmd: "/quality",  desc: "Response quality trends",          alias: [] },
+  { cmd: "/insights", desc: "Proactive insights from Soul",     alias: [] },
+  { cmd: "/patterns", desc: "What Soul learned about you",      alias: [] },
   { cmd: "/exit",     desc: "Exit (session saved)",            alias: ["/quit", "/q"] },
 ];
 
@@ -142,7 +151,9 @@ function showToolError(tool: string, error: string) {
 }
 
 function soulSay(msg: string) {
-  console.log(`\n${C.magenta}${C.bold}Soul${C.reset}${C.dim} ›${C.reset} ${msg}`);
+  const speaker = activeChildName || "Soul";
+  const color = activeChildName ? C.cyan : C.magenta;
+  console.log(`\n${color}${C.bold}${speaker}${C.reset}${C.dim} ›${C.reset} ${msg}`);
 }
 
 // ─── Session Management ───
@@ -234,6 +245,27 @@ async function main() {
   saveSessionId(sessionId);
 
   console.log(`${C.dim}Session: ${sessionId.split("-")[0]}${resumed ? " (resumed)" : ""} | Model: ${modelName} | /help for commands${C.reset}\n`);
+
+  // UPGRADE #11: First Message Magic — smart greeting on new session
+  if (!resumed) {
+    try {
+      const { generateFirstMessage, formatFirstMessage } = await import("./core/first-message.js");
+      const ctx = generateFirstMessage();
+      const hasContent = ctx.pendingDreams.length > 0 || ctx.unresolvedItems.length > 0 || ctx.hoursSinceLastChat > 2;
+      if (hasContent) {
+        soulSay(await formatFirstMessage(ctx));
+        console.log("");
+      } else {
+        soulSay(ctx.greeting + " มีอะไรให้ช่วยครับ?");
+        console.log("");
+      }
+    } catch { /* first run or missing modules */ }
+  }
+
+  // UPGRADE #8: Run dream cycle in background on startup
+  try {
+    import("./core/soul-dreams.js").then(({ dreamCycle }) => dreamCycle()).catch(() => {});
+  } catch { /* ok */ }
 
   // ─── Tab Completer ───
   function completer(line: string): [string[], string] {
@@ -380,11 +412,14 @@ async function handleMessage(input: string, sessionId: string) {
   startSpinner("thinking...");
 
   try {
-    const history = getConversationHistory(sessionId, 30);
+    const history = getConversationHistory(sessionId, 12);
+
+    let streamStarted = false;
 
     const result = await runAgentLoop(input, {
       history,
       maxIterations: 10,
+      childName: activeChildName || undefined,
       onProgress: (event) => {
         switch (event.type) {
           case "thinking":
@@ -406,8 +441,18 @@ async function handleMessage(input: string, sessionId: string) {
             stopSpinner();
             showToolError(event.tool, event.error);
             break;
+          case "streaming_token":
+            if (!streamStarted) {
+              stopSpinner();
+              const speaker = activeChildName || "Soul";
+              const speakerColor = activeChildName ? C.cyan : C.magenta;
+              process.stdout.write(`\n${speakerColor}${C.bold}${speaker}${C.reset}${C.dim} ›${C.reset} `);
+              streamStarted = true;
+            }
+            process.stdout.write(event.token);
+            break;
           case "responding":
-            updateSpinner("composing response...");
+            if (!streamStarted) updateSpinner("composing response...");
             break;
           case "cache_hit":
             stopSpinner();
@@ -422,7 +467,12 @@ async function handleMessage(input: string, sessionId: string) {
     });
 
     stopSpinner();
-    soulSay(result.reply);
+    if (streamStarted) {
+      // Streaming already printed the text, just add newline
+      console.log("");
+    } else {
+      soulSay(result.reply);
+    }
 
     // Show metadata footer
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
@@ -437,6 +487,11 @@ async function handleMessage(input: string, sessionId: string) {
     meta.push(`${elapsed}s`);
     if (result.totalTokens > 0) meta.push(`${result.totalTokens} tok`);
     meta.push(`turn ${Math.ceil((getConversationHistory(sessionId, 100).length) / 2)}`);
+
+    // UPGRADE #13: Show confidence score
+    if (result.confidence) {
+      meta.push(`${result.confidence.overall}% conf`);
+    }
 
     console.log(`${C.dim}  [${meta.join(" | ")}]${C.reset}`);
 
@@ -471,6 +526,54 @@ function handleCommand(input: string, sessionId: string, rl: readline.Interface)
 
     case "/new":
       return "new_session";
+
+    case "/talk":
+    case "/t": {
+      const rawParts = input.split(/\s+/);
+      const childArg = rawParts.slice(1).join(" ");
+      if (!childArg || childArg === "soul" || childArg === "core") {
+        activeChildName = null;
+        const masterName = soul.getMaster()?.name || "Master";
+        rl.setPrompt(`${C.cyan}${masterName}${C.reset}${C.dim} ›${C.reset} `);
+        console.log(`\n${C.magenta}Now talking to ${C.bold}Soul Core${C.reset}`);
+      } else {
+        // Check if child exists
+        try {
+          const { getChild, listChildren: listC } = require("./core/soul-family.js");
+          // We can't await in sync, so we'll just set it and validate later
+          activeChildName = childArg;
+          rl.setPrompt(`${C.cyan}→ ${childArg}${C.reset}${C.dim} ›${C.reset} `);
+          console.log(`\n${C.cyan}Now talking to ${C.bold}${childArg}${C.reset}${C.dim} (use ${C.cyan}/talk soul${C.reset}${C.dim} to go back)${C.reset}`);
+        } catch {
+          activeChildName = childArg;
+          rl.setPrompt(`${C.cyan}→ ${childArg}${C.reset}${C.dim} ›${C.reset} `);
+          console.log(`\n${C.cyan}Switched to ${C.bold}${childArg}${C.reset}`);
+        }
+      }
+      break;
+    }
+
+    case "/team": {
+      console.log(`\n${C.bold}Soul Team:${C.reset}`);
+      console.log(`  ${C.magenta}Soul Core${C.reset} — Central AI companion ${activeChildName === null ? `${C.green}(active)${C.reset}` : ""}`);
+      try {
+        const rawDb = require("better-sqlite3")(require("path").join(require("os").homedir(), ".soul", "soul.db"));
+        const children = rawDb.prepare("SELECT name, specialty, level FROM soul_children WHERE is_active = 1 ORDER BY level DESC").all() as any[];
+        rawDb.close();
+        if (children.length === 0) {
+          console.log(`\n${C.dim}  No children yet. Ask Soul to create specialists with soul_spawn.${C.reset}`);
+        } else {
+          for (const c of children) {
+            const isActive = activeChildName === c.name;
+            console.log(`  ${C.cyan}${c.name}${C.reset} [Lv.${c.level}] — ${c.specialty} ${isActive ? `${C.green}(active)${C.reset}` : ""}`);
+          }
+          console.log(`\n${C.dim}  Use ${C.cyan}/talk <name>${C.reset}${C.dim} to switch | ${C.cyan}/talk soul${C.reset}${C.dim} to go back${C.reset}`);
+        }
+      } catch {
+        console.log(`${C.dim}  Could not load team. Start a conversation first.${C.reset}`);
+      }
+      break;
+    }
 
     case "/history":
     case "/hist": {
@@ -539,6 +642,71 @@ function handleCommand(input: string, sessionId: string, rl: readline.Interface)
     case "/clear":
     case "/cls":
       process.stdout.write("\x1b[2J\x1b[H");
+      break;
+
+    case "/energy":
+      import("./core/energy-awareness.js").then(({ getEnergyReport, formatEnergyReport }) => {
+        console.log(`\n${formatEnergyReport(getEnergyReport())}`);
+      }).catch(() => console.log(`${C.dim}  No energy data yet.${C.reset}`));
+      break;
+
+    case "/dreams":
+      import("./core/soul-dreams.js").then(async ({ getUnsharedDreams, markDreamsShared, getDreamStats }) => {
+        const stats = getDreamStats();
+        const dreams = getUnsharedDreams(5);
+        console.log(`\n${C.bold}Soul Dreams:${C.reset} ${stats.total} total (${stats.connections} connections, ${stats.patterns} patterns, ${stats.questions} questions)`);
+        if (dreams.length > 0) {
+          console.log(`${C.dim}New insights:${C.reset}`);
+          for (const d of dreams) {
+            console.log(`  ${C.cyan}[${d.type}]${C.reset} ${d.content}`);
+          }
+          markDreamsShared(dreams.map(d => d.id));
+        } else {
+          console.log(`${C.dim}  No new dreams. All insights have been shared.${C.reset}`);
+        }
+      }).catch(() => console.log(`${C.dim}  Dreams not available yet.${C.reset}`));
+      break;
+
+    case "/handoff":
+      import("./core/context-handoff.js").then(({ exportContext, formatContextForExport }) => {
+        const packet = exportContext(sessionId);
+        const text = formatContextForExport(packet);
+        console.log(`\n${text}`);
+        console.log(`\n${C.dim}Copy the above and paste into another AI to continue the conversation.${C.reset}`);
+      }).catch(() => console.log(`${C.dim}  Context handoff not available.${C.reset}`));
+      break;
+
+    case "/quality":
+      import("./core/response-quality.js").then(({ getQualityTrends }) => {
+        const t = getQualityTrends();
+        console.log(`\n${C.bold}Response Quality:${C.reset} (${t.totalScored} scored)`);
+        console.log(`  Overall: ${Math.round(t.avgOverall * 100)}% | Relevance: ${Math.round(t.avgRelevance * 100)}% | Completeness: ${Math.round(t.avgCompleteness * 100)}% | Conciseness: ${Math.round(t.avgConciseness * 100)}%`);
+        console.log(`  Trend: ${t.trend === "improving" ? C.green : t.trend === "declining" ? C.red : C.dim}${t.trend}${C.reset}`);
+      }).catch(() => console.log(`${C.dim}  Quality data not available yet.${C.reset}`));
+      break;
+
+    case "/insights":
+      import("./core/proactive-intelligence.js").then(({ generateProactiveInsights, formatInsights }) => {
+        const insights = generateProactiveInsights();
+        console.log(`\n${C.bold}Proactive Insights:${C.reset}`);
+        if (insights.length === 0) {
+          console.log(`${C.dim}  No insights right now.${C.reset}`);
+        } else {
+          console.log(formatInsights(insights));
+        }
+      }).catch(() => console.log(`${C.dim}  Insights not available.${C.reset}`));
+      break;
+
+    case "/patterns":
+      import("./core/active-learning.js").then(({ getMasterPatterns }) => {
+        const p = getMasterPatterns();
+        console.log(`\n${C.bold}What Soul Learned About You:${C.reset}`);
+        console.log(`  Topics: ${p.topTopics.slice(0, 7).map(t => `${t.pattern} (${t.frequency}x)`).join(", ") || "none yet"}`);
+        console.log(`  Active hours: ${p.activeHours.join(":00, ") || "unknown"}`);
+        console.log(`  Active days: ${p.activeDays.join(", ") || "unknown"}`);
+        console.log(`  Question style: ${p.questionStyle}`);
+        if (p.commonWorkflows.length > 0) console.log(`  Workflows: ${p.commonWorkflows.join(", ")}`);
+      }).catch(() => console.log(`${C.dim}  Not enough data yet.${C.reset}`));
       break;
 
     case "/exit":

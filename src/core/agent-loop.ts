@@ -7,7 +7,7 @@
  * Flow: User message → Route tools → LLM thinks → Tool calls → Execute → Feed back → ... → Final answer
  */
 
-import { chat, type LLMMessage, type LLMToolDef, type LLMToolCall, type LLMResponse } from "./llm-connector.js";
+import { chat, chatStream, type LLMMessage, type LLMToolDef, type LLMToolCall, type LLMResponse } from "./llm-connector.js";
 import { getRawDb } from "../db/index.js";
 import {
   getCachedResponse,
@@ -89,8 +89,42 @@ const CATEGORY_KEYWORDS: Record<string, string[]> = {
   wsnotify: ["websocket", "broadcast", "push notification", "real-time", "ws client", "แจ้งเตือนเรียลไทม์"],
 };
 
-function routeTools(message: string, maxTools: number = 15): InternalTool[] {
+// UPGRADE #5: Track tool success rates for smarter routing
+const MAX_TRACKED_TOOLS = 200;
+const toolSuccessTracker = new Map<string, { success: number; total: number }>();
+
+function trackToolSuccess(toolName: string, wasUseful: boolean) {
+  const entry = toolSuccessTracker.get(toolName) || { success: 0, total: 0 };
+  entry.total++;
+  if (wasUseful) entry.success++;
+  toolSuccessTracker.set(toolName, entry);
+
+  // Evict least-used entries when map grows too large
+  if (toolSuccessTracker.size > MAX_TRACKED_TOOLS) {
+    const sorted = [...toolSuccessTracker.entries()].sort((a, b) => a[1].total - b[1].total);
+    for (let i = 0; i < sorted.length - MAX_TRACKED_TOOLS; i++) {
+      toolSuccessTracker.delete(sorted[i][0]);
+    }
+  }
+}
+
+function getToolSuccessRate(toolName: string): number {
+  const entry = toolSuccessTracker.get(toolName);
+  if (!entry || entry.total < 3) return 0.5; // default
+  return entry.success / entry.total;
+}
+
+function routeTools(message: string, maxTools: number = 8): InternalTool[] {
   const lower = message.toLowerCase();
+
+  // Fast path: simple greetings/chat don't need tools
+  const isSimpleChat = /^(hi|hello|hey|สวัสดี|ดี|ว่าไง|หวัดดี|ขอบคุณ|thanks|ok|โอเค|555|aha|haha|lol|ครับ|ค่ะ|จ้า|จ้ะ|ดีครับ|ดีค่ะ)[!?. ]*$/i.test(lower);
+  if (isSimpleChat) return [];
+
+  // Fast path: very short messages (< 15 chars) rarely need tools
+  if (lower.length < 15 && !lower.includes("จำ") && !lower.includes("remember") && !lower.includes("search")) {
+    return [];
+  }
 
   // Score each category
   const scores = new Map<string, number>();
@@ -102,20 +136,23 @@ function routeTools(message: string, maxTools: number = 15): InternalTool[] {
     if (score > 0) scores.set(category, score);
   }
 
-  // Always include memory (Soul should always be able to remember/search)
-  if (!scores.has("memory")) scores.set("memory", 0.5);
+  // Only include memory if message seems to need it (not always)
+  if (scores.size === 0) scores.set("memory", 0.5);
 
   // Sort categories by relevance
   const sortedCategories = Array.from(scores.entries())
     .sort((a, b) => b[1] - a[1])
     .map(([cat]) => cat);
 
-  // Collect tools from top categories
+  // Collect tools from top categories (limit categories to top 3 for speed)
   const selected: InternalTool[] = [];
   const allTools = getRegisteredTools();
+  const topCategories = sortedCategories.slice(0, 3);
 
-  for (const category of sortedCategories) {
+  for (const category of topCategories) {
     const catTools = allTools.filter(t => t.category === category);
+    // UPGRADE #5: Sort by success rate within category
+    catTools.sort((a, b) => getToolSuccessRate(b.name) - getToolSuccessRate(a.name));
     for (const tool of catTools) {
       if (selected.length >= maxTools) break;
       if (!selected.find(s => s.name === tool.name)) {
@@ -125,12 +162,12 @@ function routeTools(message: string, maxTools: number = 15): InternalTool[] {
     if (selected.length >= maxTools) break;
   }
 
-  // If nothing matched, include general-purpose tools
+  // If nothing matched, include general-purpose tools (fewer)
   if (selected.length === 0) {
     const generalTools = allTools.filter(t =>
-      ["memory", "knowledge", "thinking", "notes"].includes(t.category)
+      ["memory", "knowledge"].includes(t.category)
     );
-    return generalTools.slice(0, maxTools);
+    return generalTools.slice(0, 4);
   }
 
   return selected;
@@ -172,6 +209,8 @@ export interface AgentResult {
   cached?: boolean;
   knowledgeHit?: boolean;
   tokensSaved?: number;
+  confidence?: { overall: number; label: string; emoji: string };
+  responseMs?: number;
 }
 
 export type ProgressEvent =
@@ -180,6 +219,7 @@ export type ProgressEvent =
   | { type: "tool_end"; tool: string; result: string; durationMs: number }
   | { type: "tool_error"; tool: string; error: string }
   | { type: "responding" }
+  | { type: "streaming_token"; token: string }
   | { type: "cache_hit" }
   | { type: "knowledge_hit"; source: string };
 
@@ -194,14 +234,40 @@ export async function runAgentLoop(
     history?: LLMMessage[];
     skipCache?: boolean;
     onProgress?: (event: ProgressEvent) => void;
+    childName?: string; // Talk to a specific Soul Child instead of Core
   }
 ): Promise<AgentResult> {
+
+  const startTimeMs = Date.now();
+
+  // UPGRADE #3: Update master profile from this message (async, non-blocking)
+  try {
+    const { updateProfileFromMessage } = await import("./master-profile.js");
+    updateProfileFromMessage(userMessage, true);
+  } catch { /* ok — first run may not have table yet */ }
+
+  // UPGRADE #9: Personality drift — learn from master's style
+  try {
+    const { learnFromMasterMessage } = await import("./personality-drift.js");
+    learnFromMasterMessage(userMessage);
+  } catch { /* ok */ }
+
+  // UPGRADE #20: Predictive context — record interaction for predictions
+  try {
+    const { recordInteraction } = await import("./predictive-context.js");
+    const previousTopic = options?.history?.slice(-2).find(m => m.role === "user")?.content?.substring(0, 50);
+    recordInteraction(userMessage, new Date().getHours(), previousTopic || undefined);
+  } catch { /* ok */ }
 
   // ── Layer 1: Response Cache ──
   if (!options?.skipCache) {
     const cached = getCachedResponse(userMessage);
     if (cached) {
       options?.onProgress?.({ type: "cache_hit" });
+      try {
+        const { logEnergy } = await import("./energy-awareness.js");
+        logEnergy({ tokensUsed: 0, responseMs: Date.now() - startTimeMs, wasCached: true, wasKnowledge: false, toolsUsed: 0, model: "cache" });
+      } catch { /* ok */ }
       return {
         reply: cached.response,
         toolsUsed: [],
@@ -211,6 +277,8 @@ export async function runAgentLoop(
         provider: "soul-cache",
         cached: true,
         tokensSaved: cached.tokensSaved,
+        confidence: { overall: 90, label: "very high", emoji: "🟢" },
+        responseMs: Date.now() - startTimeMs,
       };
     }
   }
@@ -221,6 +289,10 @@ export async function runAgentLoop(
     options?.onProgress?.({ type: "knowledge_hit", source: knowledgeResult.source || "knowledge" });
     // Cache this for next time
     cacheResponse(userMessage, knowledgeResult.answer, 300);
+    try {
+      const { logEnergy } = await import("./energy-awareness.js");
+      logEnergy({ tokensUsed: 0, responseMs: Date.now() - startTimeMs, wasCached: false, wasKnowledge: true, toolsUsed: 0, model: "knowledge" });
+    } catch { /* ok */ }
     return {
       reply: knowledgeResult.answer,
       toolsUsed: [],
@@ -230,6 +302,8 @@ export async function runAgentLoop(
       provider: `soul-knowledge (${knowledgeResult.source})`,
       knowledgeHit: true,
       tokensSaved: 300,
+      confidence: { overall: 85, label: "very high", emoji: "🟢" },
+      responseMs: Date.now() - startTimeMs,
     };
   }
 
@@ -251,6 +325,15 @@ export async function runAgentLoop(
     // Don't block — but warn Soul about the attempt
   }
 
+  // UPGRADE #19: Smart model routing (before tool routing, affects provider selection)
+  try {
+    const { routeToModel } = await import("./model-router.js");
+    const route = routeToModel(sanitizedMessage);
+    if (route && !options?.providerId) {
+      options = { ...options, providerId: route.providerId, modelId: route.modelId, temperature: route.temperature };
+    }
+  } catch { /* ok */ }
+
   // Route relevant tools
   const relevantTools = routeTools(sanitizedMessage);
   const toolDefs: LLMToolDef[] = relevantTools.map(t => ({
@@ -262,9 +345,23 @@ export async function runAgentLoop(
     },
   }));
 
-  // Build messages
+  // Build messages — use child's system prompt if talking to a specific child
+  let activeSystemPrompt = options?.systemPrompt || SOUL_AGENT_SYSTEM;
+  let activeSpeaker = "Soul";
+
+  if (options?.childName) {
+    try {
+      const { getChild } = await import("./soul-family.js");
+      const child = await getChild(options.childName);
+      if (child) {
+        activeSystemPrompt = child.systemPrompt;
+        activeSpeaker = child.name;
+      }
+    } catch { /* fallback to core */ }
+  }
+
   const messages: LLMMessage[] = [
-    { role: "system", content: options?.systemPrompt || SOUL_AGENT_SYSTEM },
+    { role: "system", content: activeSystemPrompt },
   ];
 
   // Add injection warning if detected
@@ -277,45 +374,113 @@ export async function runAgentLoop(
     });
   }
 
-  // Add context from memory (global — spans all sessions)
-  try {
-    const { search } = await import("../memory/memory-engine.js");
-    const memories = await search(sanitizedMessage, 3);
-    if (memories.length > 0) {
-      const ctx = memories.map((m: any) => `[Memory] ${m.content}`).join("\n");
-      messages.push({ role: "system", content: `Relevant memories:\n${ctx}` });
-    }
-  } catch { /* ok */ }
+  // Add context from memory, cross-session, feedback, mistakes, and master profile — ALL IN PARALLEL
+  // Timeout: 8s max for all context gathering (prevents hangs on slow DB/imports)
+  // Each task is individually wrapped with timeout so partial results are preserved
+  const wrapWithTimeout = <T>(p: Promise<T>, ms: number): Promise<T | null> =>
+    Promise.race([p, new Promise<null>(resolve => setTimeout(() => resolve(null), ms))]);
 
-  // Cross-session intelligence — search OTHER sessions for relevant context
-  try {
-    const crossCtx = searchCrossSessionContext(sanitizedMessage, options?.history?.[0]?.content);
-    if (crossCtx) {
-      messages.push({ role: "system", content: crossCtx });
-    }
-  } catch { /* ok */ }
+  const CTX_TIMEOUT = 8000;
+  const contextResults = await Promise.allSettled([
+    // Memory search
+    wrapWithTimeout((async () => {
+      const { search } = await import("../memory/memory-engine.js");
+      const memories = await search(sanitizedMessage, 3);
+      if (memories.length > 0) {
+        return `Relevant memories:\n${memories.map((m: any) => `[Memory] ${m.content}`).join("\n")}`;
+      }
+      return null;
+    })(), CTX_TIMEOUT),
+    // Cross-session intelligence
+    wrapWithTimeout((async () => {
+      return searchCrossSessionContext(sanitizedMessage, options?.history?.[0]?.content);
+    })(), CTX_TIMEOUT),
+    // Feedback learnings
+    wrapWithTimeout((async () => {
+      const { getFeedbackLearnings } = await import("./feedback-loop.js");
+      const learnings = getFeedbackLearnings();
+      if (learnings && !learnings.includes("No feedback yet")) {
+        return `Master's feedback preferences:\n${learnings}`;
+      }
+      return null;
+    })(), CTX_TIMEOUT),
+    // UPGRADE #2: Mistake prevention — search for known mistakes related to this topic
+    wrapWithTimeout((async () => {
+      const { checkForKnownMistakes } = await import("./self-improvement.js");
+      const mistakes = await checkForKnownMistakes(sanitizedMessage);
+      if (mistakes.length > 0) {
+        const warnings = mistakes.slice(0, 3).map(m => {
+          const lines = m.split("\n");
+          return lines.map(l => l.trim()).filter(l => l).join(" | ");
+        });
+        return `⚠️ MISTAKE PREVENTION — You have made similar mistakes before. Be careful:\n${warnings.join("\n")}\nDo NOT repeat these mistakes. If unsure, tell master honestly.`;
+      }
+      return null;
+    })(), CTX_TIMEOUT),
+    // UPGRADE #3: Master profile — inject personalization context
+    wrapWithTimeout((async () => {
+      const { getMasterProfile } = await import("./master-profile.js");
+      const profile = getMasterProfile();
+      if (profile) {
+        return `Master Profile:\n${profile}`;
+      }
+      return null;
+    })(), CTX_TIMEOUT),
+    // UPGRADE #9: Personality drift — adapt Soul's style
+    wrapWithTimeout((async () => {
+      const { getPersonalityGuidance } = await import("./personality-drift.js");
+      return getPersonalityGuidance();
+    })(), CTX_TIMEOUT),
+    // UPGRADE #12: Silence understanding — adapt to master's brevity/patterns
+    wrapWithTimeout((async () => {
+      if (options?.history && options.history.length >= 2) {
+        const { analyzeInteractionPattern, getResponseGuidance } = await import("./silence-understanding.js");
+        const profile = analyzeInteractionPattern(userMessage, options.history);
+        const guidance = getResponseGuidance(profile);
+        return guidance || null;
+      }
+      return null;
+    })(), CTX_TIMEOUT),
+    // UPGRADE #18: Active learning context
+    wrapWithTimeout((async () => {
+      const { getLearningContext } = await import("./active-learning.js");
+      return getLearningContext();
+    })(), CTX_TIMEOUT),
+    // UPGRADE #20: Predictive context — anticipate what master might ask
+    wrapWithTimeout((async () => {
+      const { getPredictiveContext } = await import("./predictive-context.js");
+      return getPredictiveContext();
+    })(), CTX_TIMEOUT),
+    // UPGRADE #24: Answer memory — reference previous good answers
+    wrapWithTimeout((async () => {
+      const { getAnswerContext } = await import("./answer-memory.js");
+      return getAnswerContext(sanitizedMessage);
+    })(), CTX_TIMEOUT),
+  ]);
 
-  // Add feedback learnings — inject master's preferences into context
-  try {
-    const { getFeedbackLearnings } = await import("./feedback-loop.js");
-    const learnings = getFeedbackLearnings();
-    if (learnings && !learnings.includes("No feedback yet")) {
-      messages.push({ role: "system", content: `Master's feedback preferences:\n${learnings}` });
+  // Limit total context size to avoid exceeding model's context window
+  let contextTokenEstimate = 0;
+  const MAX_CONTEXT_TOKENS = 3000; // Reserve space for user message + response
+  for (const r of contextResults) {
+    if (r.status === "fulfilled" && r.value) {
+      const tokenEst = Math.ceil(r.value.length / 4); // rough estimate: 1 token ≈ 4 chars
+      if (contextTokenEstimate + tokenEst > MAX_CONTEXT_TOKENS) break; // stop adding context
+      contextTokenEstimate += tokenEst;
+      messages.push({ role: "system", content: r.value });
     }
-  } catch { /* ok — feedback module may not be initialized yet */ }
+  }
 
   // Add conversation history — smart windowing to reduce token load
   if (options?.history && options.history.length > 0) {
     const history = options.history;
 
-    if (history.length <= 8) {
+    if (history.length <= 6) {
       // Short conversation — send all
       for (const h of history) messages.push(h);
     } else {
-      // Long conversation — summarize old + keep recent
-      // Take first 2 messages (topic context) + last 6 messages (recent context)
-      const oldMessages = history.slice(0, Math.max(history.length - 6, 0));
-      const recentMessages = history.slice(-6);
+      // Long conversation — summarize old + keep recent 4
+      const oldMessages = history.slice(0, Math.max(history.length - 4, 0));
+      const recentMessages = history.slice(-4);
 
       // Compress old messages into a summary
       if (oldMessages.length > 0) {
@@ -338,6 +503,35 @@ export async function runAgentLoop(
 
   messages.push({ role: "user", content: sanitizedMessage });
 
+  // UPGRADE #17: Thinking chain — add deep thinking for complex questions
+  // Skip for local Ollama models (too slow for multi-step reasoning)
+  const isLocalModel = !options?.providerId || options.providerId === "ollama";
+  try {
+    const { needsDeepThinking, thinkDeep, thinkQuick } = await import("./thinking-chain.js");
+    const thinkLevel = isLocalModel ? "none" : needsDeepThinking(sanitizedMessage);
+    if (thinkLevel === "deep" && totalTokens < MAX_TOKEN_BUDGET * 0.5) {
+      options?.onProgress?.({ type: "thinking", iteration: 0 });
+      const thinkResult = await thinkDeep(sanitizedMessage, undefined, {
+        providerId: options?.providerId,
+        modelId: options?.modelId,
+      });
+      totalTokens += thinkResult.totalTokens;
+      messages.push({
+        role: "system",
+        content: `Deep analysis completed (${thinkResult.method}):\n${thinkResult.steps.map(s => `[${s.type}] ${s.content}`).join("\n")}\n\nAssumptions: ${thinkResult.assumptions.join(", ") || "none"}\nConfidence: ${thinkResult.confidence}%\n\nUse this analysis to give a thorough answer.`,
+      });
+    } else if (thinkLevel === "quick" && totalTokens < MAX_TOKEN_BUDGET * 0.7) {
+      const quickResult = await thinkQuick(sanitizedMessage, undefined, {
+        providerId: options?.providerId,
+        modelId: options?.modelId,
+      });
+      messages.push({
+        role: "system",
+        content: `Quick analysis: ${quickResult.answer}\nUse this as additional perspective.`,
+      });
+    }
+  } catch { /* thinking chain is non-critical */ }
+
   // Agent loop
   for (let i = 0; i < maxIterations; i++) {
     options?.onProgress?.({ type: "thinking", iteration: i + 1 });
@@ -351,12 +545,29 @@ export async function runAgentLoop(
       };
     }
 
-    const response = await chat(messages, {
-      providerId: options?.providerId,
-      modelId: options?.modelId,
-      tools: toolDefs.length > 0 ? toolDefs : undefined,
-      temperature: options?.temperature,
-    });
+    // Use streaming when no tools are needed (pure text response)
+    // or when we already used tools (iteration > 0) and expect final answer
+    const hasTools = toolDefs.length > 0;
+    const useStreaming = !hasTools || i > 0;
+
+    let response: LLMResponse;
+    if (useStreaming && !hasTools) {
+      // Pure streaming — no tools, just text
+      response = await chatStream(messages, {
+        providerId: options?.providerId,
+        modelId: options?.modelId,
+        temperature: options?.temperature,
+        onToken: (token) => options?.onProgress?.({ type: "streaming_token", token }),
+      });
+    } else {
+      // Tool-capable call (non-streaming)
+      response = await chat(messages, {
+        providerId: options?.providerId,
+        modelId: options?.modelId,
+        tools: toolDefs.length > 0 ? toolDefs : undefined,
+        temperature: options?.temperature,
+      });
+    }
 
     totalTokens += response.usage.totalTokens;
     lastModel = response.model;
@@ -365,7 +576,23 @@ export async function runAgentLoop(
     // No tool calls — we have the final answer
     if (!response.toolCalls || response.toolCalls.length === 0) {
       options?.onProgress?.({ type: "responding" });
-      const reply = response.content || "(Soul had nothing to say)";
+      let reply = response.content || "(Soul had nothing to say)";
+
+      // UPGRADE #4: Self-verify for complex answers (not simple greetings)
+      // Only verify if: answer is long enough, used tools, and we have budget
+      if (reply.length > 200 && toolsUsed.length > 0 && totalTokens < MAX_TOKEN_BUDGET * 0.7) {
+        try {
+          const verifyResult = await selfVerifyAnswer(reply, userMessage, {
+            providerId: options?.providerId,
+            modelId: options?.modelId,
+          });
+          if (verifyResult) {
+            // Append confidence note if issues found
+            reply = verifyResult;
+          }
+        } catch { /* verification failure is not critical */ }
+      }
+
       // Cache the response for future similar questions
       cacheResponse(userMessage, reply, totalTokens);
       trackTokensUsed(totalTokens);
@@ -380,6 +607,73 @@ export async function runAgentLoop(
         });
       } catch { /* don't break on collection errors */ }
 
+      // UPGRADE #13: Calculate confidence score
+      let confidence: { overall: number; label: string; emoji: string } | undefined;
+      try {
+        const { calculateConfidence } = await import("./confidence-engine.js");
+        const score = calculateConfidence({
+          question: userMessage,
+          answer: reply,
+          toolsUsed,
+          knowledgeHit: false,
+          cached: false,
+          iterations: i + 1,
+        });
+        confidence = { overall: score.overall, label: score.label, emoji: score.emoji };
+      } catch { /* ok */ }
+
+      const responseMs = Date.now() - startTimeMs;
+
+      // UPGRADE #16: Log energy usage
+      try {
+        const { logEnergy } = await import("./energy-awareness.js");
+        logEnergy({
+          tokensUsed: totalTokens,
+          responseMs,
+          wasCached: false,
+          wasKnowledge: false,
+          toolsUsed: toolsUsed.length,
+          model: lastModel,
+        });
+      } catch { /* ok */ }
+
+      // UPGRADE #19: Track model performance
+      try {
+        const { trackModelPerformance } = await import("./model-router.js");
+        trackModelPerformance({
+          providerId: lastProvider, modelId: lastModel,
+          taskType: toolsUsed.length > 0 ? "tool-assisted" : "general",
+          responseMs, tokensUsed: totalTokens, wasSuccessful: true,
+        });
+      } catch { /* ok */ }
+
+      // UPGRADE #21: Score response quality
+      try {
+        const { scoreResponseQuality } = await import("./response-quality.js");
+        const qScore = scoreResponseQuality(userMessage, reply, toolsUsed);
+        // If quality is high, store as good answer for future reference
+        if (qScore.overall >= 0.7) {
+          const { storeGoodAnswer } = await import("./answer-memory.js");
+          storeGoodAnswer(userMessage, reply, qScore.overall);
+        }
+      } catch { /* ok */ }
+
+      // UPGRADE #22: Track tool outcomes
+      if (toolsUsed.length > 0) {
+        try {
+          const { recordToolOutcome } = await import("./smart-tool-learning.js");
+          const topic = sanitizedMessage.substring(0, 50).toLowerCase();
+          for (const tool of [...new Set(toolsUsed)]) {
+            recordToolOutcome({
+              toolName: tool, topic,
+              wasUseful: reply.length > 50, // heuristic: if answer is substantial, tools helped
+              durationMs: responseMs,
+              pairedWith: toolsUsed.filter(t => t !== tool),
+            });
+          }
+        } catch { /* ok */ }
+      }
+
       return {
         reply,
         toolsUsed,
@@ -387,6 +681,8 @@ export async function runAgentLoop(
         totalTokens,
         model: lastModel,
         provider: lastProvider,
+        confidence,
+        responseMs,
       };
     }
 
@@ -410,14 +706,25 @@ export async function runAgentLoop(
           result = `Error: Unknown tool "${toolName}"`;
           options?.onProgress?.({ type: "tool_error", tool: toolName, error: "Unknown tool" });
         } else {
-          const args = JSON.parse(tc.function.arguments || "{}");
+          // Safe JSON parse — prevent crash from malformed LLM output
+          let args: Record<string, any>;
+          try {
+            args = JSON.parse(tc.function.arguments || "{}");
+          } catch {
+            result = `Error: Invalid JSON in tool arguments for ${toolName}`;
+            options?.onProgress?.({ type: "tool_error", tool: toolName, error: "Invalid JSON arguments" });
+            messages.push({ role: "tool", content: result, tool_call_id: tc.id });
+            continue;
+          }
           options?.onProgress?.({ type: "tool_start", tool: toolName, args });
           result = await tool.execute(args);
           options?.onProgress?.({ type: "tool_end", tool: toolName, result: result.substring(0, 200), durationMs: Date.now() - toolStart });
         }
       } catch (err: any) {
-        result = `Error executing ${toolName}: ${err.message}`;
-        options?.onProgress?.({ type: "tool_error", tool: toolName, error: err.message });
+        // Sanitize error — don't leak file paths or stack traces to LLM
+        const safeError = (err.message || "Unknown error").replace(/[A-Z]:\\[^\s]+/gi, "[path]").replace(/\/[^\s]+\.(ts|js)/gi, "[file]").substring(0, 200);
+        result = `Error executing ${toolName}: ${safeError}`;
+        options?.onProgress?.({ type: "tool_error", tool: toolName, error: safeError });
       }
 
       // Add tool result (truncate to prevent context overflow)
@@ -502,6 +809,24 @@ export function registerAllInternalTools() {
   registerMediaCreatorTools_();
   registerVideoCreatorTools_();
   registerWsNotificationTools_();
+  registerMasterProfileTools_();
+  registerKnowledgeGraphTools_();
+
+  // ── Phase 3: Advanced Intelligence ──
+  registerDreamTools_();
+  registerContradictionTools_();
+  registerConfidenceTools_();
+  registerUndoMemoryTools_();
+  registerContextHandoffTools_();
+  registerEnergyTools_();
+
+  // ── Phase 4: Deep Intelligence ──
+  registerThinkingChainTools_();
+  registerActiveLearningTools_();
+  registerModelRouterTools_();
+  registerProactiveTools_();
+  registerQualityTools_();
+  registerAnswerMemoryTools_();
 }
 
 // ─── Tool Registration Helpers ───
@@ -2941,6 +3266,130 @@ export function listSessions(limit: number = 10): Array<{ sessionId: string; mes
   }));
 }
 
+// ─── Master Profile Internal Tools (UPGRADE #3) ───
+
+function registerMasterProfileTools_() {
+  registerInternalTool({
+    name: "soul_master_profile",
+    description: "View Soul's understanding of its master — language, style, expertise, interests.",
+    category: "meta",
+    parameters: { type: "object", properties: {} },
+    execute: async () => {
+      const { getMasterProfile, getProfileEntries } = await import("./master-profile.js");
+      const profile = getMasterProfile();
+      const entries = getProfileEntries();
+      if (!profile) return "Master profile still building. Soul learns from every interaction.";
+      let text = `Master Profile:\n${profile}\n\n`;
+      text += entries.map((e: any) => `  ${e.key}: ${e.value} (${Math.round(e.confidence * 100)}%)`).join("\n");
+      return text;
+    },
+  });
+}
+
+// ─── Knowledge Graph Internal Tools (UPGRADE #7) ───
+
+function registerKnowledgeGraphTools_() {
+  registerInternalTool({
+    name: "soul_knowledge_link",
+    description: "Create a relationship between two knowledge entries.",
+    category: "knowledge",
+    parameters: {
+      type: "object",
+      properties: {
+        fromId: { type: "number", description: "Source knowledge ID" },
+        toId: { type: "number", description: "Target knowledge ID" },
+        edgeType: { type: "string", description: "RELATED_TO, SUPPORTS, CONTRADICTS, PART_OF, USED_BY, LEADS_TO, DEPENDS_ON" },
+        context: { type: "string", description: "Why connected" },
+      },
+      required: ["fromId", "toId", "edgeType"],
+    },
+    execute: async (args) => {
+      const { addKnowledgeEdge } = await import("./knowledge.js");
+      const edge = addKnowledgeEdge(args.fromId, args.toId, args.edgeType, args.context || "");
+      return edge ? `Linked #${args.fromId} —[${args.edgeType}]→ #${args.toId}` : "Failed to link";
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_knowledge_explore",
+    description: "Traverse knowledge graph — find connected knowledge up to N hops.",
+    category: "knowledge",
+    parameters: {
+      type: "object",
+      properties: {
+        startId: { type: "number", description: "Starting knowledge ID" },
+        maxDepth: { type: "number", description: "Max hops (1-3)" },
+      },
+      required: ["startId"],
+    },
+    execute: async (args) => {
+      const { traverseKnowledgeGraph } = await import("./knowledge.js");
+      const results = traverseKnowledgeGraph(args.startId, args.maxDepth || 2);
+      if (results.length === 0) return "No connected knowledge found.";
+      return results.map(r =>
+        `[depth ${r.depth}] #${r.knowledge.id} "${r.knowledge.title}" via ${r.via}`
+      ).join("\n");
+    },
+  });
+}
+
+// ─── Self-Verify Answer (UPGRADE #4) ───
+// Think → Draft → Check → if contradiction found, revise or add disclaimer
+
+async function selfVerifyAnswer(
+  answer: string,
+  question: string,
+  options?: { providerId?: string; modelId?: string },
+): Promise<string | null> {
+  try {
+    // Check answer against knowledge base for contradictions
+    const { getKnowledge } = await import("./knowledge.js");
+    const relevantKnowledge = await getKnowledge(undefined, question, 3);
+
+    if (relevantKnowledge.length === 0) return null; // nothing to verify against
+
+    // Simple contradiction check: does the answer conflict with stored knowledge?
+    const knowledgeText = relevantKnowledge
+      .map(k => `[${k.category}] ${k.title}: ${k.content}`)
+      .join("\n");
+
+    // Use LLM for quick verification (fast, minimal tokens)
+    const verifyResponse = await chat(
+      [
+        {
+          role: "system",
+          content: `You are a fact-checker. Compare the ANSWER against KNOWN FACTS.
+If the answer contradicts known facts, output: ISSUE: <brief description>
+If the answer is consistent or knowledge is unrelated, output: OK
+Be very brief. One line only.`,
+        },
+        {
+          role: "user",
+          content: `QUESTION: ${question.substring(0, 200)}
+ANSWER: ${answer.substring(0, 500)}
+KNOWN FACTS:\n${knowledgeText.substring(0, 500)}`,
+        },
+      ],
+      {
+        providerId: options?.providerId,
+        modelId: options?.modelId,
+        temperature: 0.1,
+        maxTokens: 100,
+      },
+    );
+
+    const check = verifyResponse.content?.trim() || "";
+    if (check.startsWith("ISSUE:")) {
+      const issue = check.substring(6).trim();
+      return `${answer}\n\n⚠️ หมายเหตุ: ${issue} — ข้อมูลนี้อาจไม่สมบูรณ์ กรุณาตรวจสอบเพิ่มเติม`;
+    }
+
+    return null; // answer is fine
+  } catch {
+    return null;
+  }
+}
+
 // ─── Cross-Session Intelligence ───
 // Search ALL past sessions for relevant context so Soul can learn across conversations
 
@@ -3082,5 +3531,327 @@ export function extractSessionInsights(sessionId: string) {
         });
       }
     } catch { /* ok */ }
+
+    // UPGRADE #18: Active learning — extract patterns from this session
+    try {
+      const { extractLearningsFromSession } = require("./active-learning.js");
+      extractLearningsFromSession(messages);
+    } catch { /* ok */ }
+
+    // UPGRADE #18: Run spaced repetition on session end
+    try {
+      const { runSpacedRepetition } = require("./active-learning.js");
+      runSpacedRepetition();
+    } catch { /* ok */ }
   } catch { /* ok */ }
+}
+
+// ─── Phase 3 Tool Registrations ───
+
+function registerDreamTools_() {
+  registerInternalTool({
+    name: "soul_dream",
+    description: "Run a dream cycle — discover connections between knowledge entries while idle.",
+    category: "awareness",
+    parameters: { type: "object", properties: {} },
+    execute: async () => {
+      const { dreamCycle, getDreamStats } = await import("./soul-dreams.js");
+      const dreams = await dreamCycle();
+      const stats = getDreamStats();
+      if (dreams.length === 0) {
+        return `Dream cycle complete. No new connections found. Stats: ${stats.total} total dreams, ${stats.connections} connections, ${stats.patterns} patterns.`;
+      }
+      return `Discovered ${dreams.length} new insights:\n${dreams.map(d => `- [${d.type}] ${d.content}`).join("\n")}\n\nTotal dreams: ${stats.total}`;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_dreams_pending",
+    description: "Get dreams/insights that haven't been shared with master yet.",
+    category: "awareness",
+    parameters: { type: "object", properties: { limit: { type: "number", description: "Max dreams (default 3)" } } },
+    execute: async (args) => {
+      const { getUnsharedDreams, markDreamsShared } = await import("./soul-dreams.js");
+      const dreams = getUnsharedDreams(args.limit || 3);
+      if (dreams.length === 0) return "No pending dreams to share.";
+      // Mark as shared
+      markDreamsShared(dreams.map(d => d.id));
+      return `Dreams to share:\n${dreams.map(d => `- [${d.type}] ${d.content} (confidence: ${Math.round(d.confidence * 100)}%)`).join("\n")}`;
+    },
+  });
+}
+
+function registerContradictionTools_() {
+  registerInternalTool({
+    name: "soul_contradiction_record",
+    description: "Record when master's opinion changes or contradicts a previous statement.",
+    category: "awareness",
+    parameters: {
+      type: "object",
+      properties: {
+        topic: { type: "string", description: "The topic" },
+        old_statement: { type: "string", description: "What master said before" },
+        new_statement: { type: "string", description: "What master says now" },
+      },
+      required: ["topic", "old_statement", "new_statement"],
+    },
+    execute: async (args) => {
+      const { recordContradiction } = await import("./contradiction-journal.js");
+      const entry = recordContradiction({
+        topic: args.topic,
+        oldStatement: args.old_statement,
+        newStatement: args.new_statement,
+      });
+      return `Recorded opinion change on "${args.topic}". ID: ${entry.id}. Soul will use the latest view going forward.`;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_contradiction_check",
+    description: "Check if a topic has any recorded opinion changes.",
+    category: "awareness",
+    parameters: {
+      type: "object",
+      properties: { topic: { type: "string", description: "Topic to check" } },
+      required: ["topic"],
+    },
+    execute: async (args) => {
+      const { findContradictions, getContradictionStats } = await import("./contradiction-journal.js");
+      const matches = findContradictions(args.topic);
+      const stats = getContradictionStats();
+      if (matches.length === 0) return `No opinion changes recorded about "${args.topic}". Total tracked: ${stats.total}`;
+      return `Found ${matches.length} opinion changes about "${args.topic}":\n${matches.map(c =>
+        `- Before: "${c.oldStatement}" → Now: "${c.newStatement}" (${c.resolution})`
+      ).join("\n")}`;
+    },
+  });
+}
+
+function registerConfidenceTools_() {
+  registerInternalTool({
+    name: "soul_confidence_explain",
+    description: "Explain how confident Soul is about its last answer and why.",
+    category: "awareness",
+    parameters: { type: "object", properties: {} },
+    execute: async () => {
+      return "Confidence is calculated from: knowledge backing (30%), tool verification (20%), topic familiarity (20%), consistency (20%), and question complexity (10%). Check the confidence score shown after each response.";
+    },
+  });
+}
+
+function registerUndoMemoryTools_() {
+  registerInternalTool({
+    name: "soul_undo_memory",
+    description: "Mark a memory as incorrect. Use when master says something Soul remembered is wrong.",
+    category: "memory",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Search for the wrong memory" },
+        correction: { type: "string", description: "What the correct information is" },
+      },
+      required: ["query", "correction"],
+    },
+    execute: async (args) => {
+      const { findMemoryToUndo, undoMemory } = await import("./undo-memory.js");
+      const matches = findMemoryToUndo(args.query);
+      if (matches.length === 0) return `No memory found matching "${args.query}".`;
+
+      // Undo the most relevant match
+      const target = matches[0];
+      const result = undoMemory(target.id, args.correction, "master correction");
+      if (!result) return "Could not undo this memory.";
+      return `Memory corrected!\n  Was: "${target.content.substring(0, 100)}"\n  Now: "${args.correction}"\nSoul will use the corrected information going forward.`;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_correction_history",
+    description: "Show history of corrected memories.",
+    category: "memory",
+    parameters: { type: "object", properties: { limit: { type: "number" } } },
+    execute: async (args) => {
+      const { getCorrectionHistory, getCorrectionStats } = await import("./undo-memory.js");
+      const history = getCorrectionHistory(args.limit || 5);
+      const stats = getCorrectionStats();
+      if (history.length === 0) return "No corrections yet.";
+      return `Correction history (${stats.total} total, ${stats.recent} this week):\n${history.map(c =>
+        `- "${c.originalContent.substring(0, 60)}" → "${c.correction.substring(0, 60)}"`
+      ).join("\n")}`;
+    },
+  });
+}
+
+function registerContextHandoffTools_() {
+  registerInternalTool({
+    name: "soul_context_export",
+    description: "Export current context for handoff to another AI (Claude, ChatGPT, etc).",
+    category: "sync",
+    parameters: { type: "object", properties: {} },
+    execute: async () => {
+      const { exportContext, formatContextForExport } = await import("./context-handoff.js");
+      const packet = exportContext();
+      return formatContextForExport(packet);
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_context_import",
+    description: "Import context from another AI.",
+    category: "sync",
+    parameters: {
+      type: "object",
+      properties: {
+        context_json: { type: "string", description: "JSON context packet from another AI" },
+      },
+      required: ["context_json"],
+    },
+    execute: async (args) => {
+      const { importContext } = await import("./context-handoff.js");
+      try {
+        const packet = JSON.parse(args.context_json);
+        const result = importContext(packet);
+        return `Imported ${result.imported} items:\n${result.details.join("\n")}`;
+      } catch (e: any) {
+        return `Failed to import context: ${e.message}`;
+      }
+    },
+  });
+}
+
+function registerEnergyTools_() {
+  registerInternalTool({
+    name: "soul_energy",
+    description: "Show Soul's energy report — token usage, costs, and efficiency metrics.",
+    category: "awareness",
+    parameters: { type: "object", properties: {} },
+    execute: async () => {
+      const { getEnergyReport, formatEnergyReport } = await import("./energy-awareness.js");
+      const report = getEnergyReport();
+      return formatEnergyReport(report);
+    },
+  });
+}
+
+// ─── Phase 4 Tool Registrations ───
+
+function registerThinkingChainTools_() {
+  registerInternalTool({
+    name: "soul_think_deep",
+    description: "Think deeply about a complex question using multi-step reasoning with decomposition, debate, and verification.",
+    category: "thinking",
+    parameters: {
+      type: "object",
+      properties: {
+        question: { type: "string", description: "The question to think deeply about" },
+        context: { type: "string", description: "Additional context" },
+      },
+      required: ["question"],
+    },
+    execute: async (args) => {
+      const { thinkDeep } = await import("./thinking-chain.js");
+      const result = await thinkDeep(args.question, args.context);
+      return `Thinking chain (${result.method}):\n${result.steps.map(s => `[${s.type}] ${s.content}`).join("\n")}\n\nFinal answer: ${result.finalAnswer}\nAssumptions: ${result.assumptions.join(", ") || "none"}\nConfidence: ${result.confidence}%`;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_self_debate",
+    description: "Debate a topic from multiple perspectives to find the best answer.",
+    category: "thinking",
+    parameters: {
+      type: "object",
+      properties: {
+        question: { type: "string", description: "The question to debate" },
+      },
+      required: ["question"],
+    },
+    execute: async (args) => {
+      const { selfDebate } = await import("./thinking-chain.js");
+      const result = await selfDebate(args.question);
+      return `Debate result:\nPerspective 1: ${result.perspectives[0]}\nPerspective 2: ${result.perspectives[1]}\n\nWinner: ${result.winner}\nReason: ${result.reasoning}`;
+    },
+  });
+}
+
+function registerActiveLearningTools_() {
+  registerInternalTool({
+    name: "soul_learning_patterns",
+    description: "Show what Soul has learned about master's patterns and preferences.",
+    category: "awareness",
+    parameters: { type: "object", properties: {} },
+    execute: async () => {
+      const { getMasterPatterns } = await import("./active-learning.js");
+      const p = getMasterPatterns();
+      return `Master's patterns:\nTop topics: ${p.topTopics.map(t => `${t.pattern} (${t.frequency}x)`).join(", ") || "none yet"}\nActive hours: ${p.activeHours.join(", ") || "unknown"}\nActive days: ${p.activeDays.join(", ") || "unknown"}\nQuestion style: ${p.questionStyle}\nCommon workflows: ${p.commonWorkflows.join(", ") || "none yet"}`;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_spaced_review",
+    description: "Run spaced repetition — decay unused knowledge, boost frequently used knowledge.",
+    category: "knowledge",
+    parameters: { type: "object", properties: {} },
+    execute: async () => {
+      const { runSpacedRepetition } = await import("./active-learning.js");
+      const result = runSpacedRepetition();
+      return `Spaced repetition complete: ${result.decayed} items decayed, ${result.boosted} items boosted.`;
+    },
+  });
+}
+
+function registerModelRouterTools_() {
+  registerInternalTool({
+    name: "soul_model_stats",
+    description: "Show performance stats for all configured LLM models.",
+    category: "awareness",
+    parameters: { type: "object", properties: {} },
+    execute: async () => {
+      const { formatModelReport } = await import("./model-router.js");
+      return formatModelReport();
+    },
+  });
+}
+
+function registerProactiveTools_() {
+  registerInternalTool({
+    name: "soul_proactive_insights",
+    description: "Get proactive insights — things Soul noticed that master should know about.",
+    category: "awareness",
+    parameters: { type: "object", properties: {} },
+    execute: async () => {
+      const { generateProactiveInsights, formatInsights } = await import("./proactive-intelligence.js");
+      const insights = generateProactiveInsights();
+      return formatInsights(insights);
+    },
+  });
+}
+
+function registerQualityTools_() {
+  registerInternalTool({
+    name: "soul_quality_report",
+    description: "Show Soul's response quality trends over time.",
+    category: "awareness",
+    parameters: { type: "object", properties: {} },
+    execute: async () => {
+      const { getQualityTrends } = await import("./response-quality.js");
+      const t = getQualityTrends();
+      return `Quality Report (${t.totalScored} responses scored):\nOverall: ${Math.round(t.avgOverall * 100)}%\nRelevance: ${Math.round(t.avgRelevance * 100)}%\nCompleteness: ${Math.round(t.avgCompleteness * 100)}%\nConciseness: ${Math.round(t.avgConciseness * 100)}%\nTrend: ${t.trend}`;
+    },
+  });
+}
+
+function registerAnswerMemoryTools_() {
+  registerInternalTool({
+    name: "soul_faq",
+    description: "Show Soul's personal FAQ — most frequently asked questions with good answers.",
+    category: "memory",
+    parameters: { type: "object", properties: { limit: { type: "number" } } },
+    execute: async (args) => {
+      const { getFAQ } = await import("./answer-memory.js");
+      const faq = getFAQ(args.limit || 5);
+      if (faq.length === 0) return "No FAQ entries yet. They build up as you interact with Soul.";
+      return `FAQ (${faq.length} entries):\n${faq.map(f => `Q: ${f.questionPattern}\nA: ${f.answer.substring(0, 200)}${f.answer.length > 200 ? "..." : ""}\n(quality: ${Math.round(f.quality * 100)}%, used ${f.useCount}x)`).join("\n\n")}`;
+    },
+  });
 }

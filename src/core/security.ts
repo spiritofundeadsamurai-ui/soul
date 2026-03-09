@@ -179,12 +179,22 @@ const SENSITIVE_KEYWORDS = [
 export function containsSensitiveData(text: string): boolean {
   const lower = text.toLowerCase();
 
-  // Check keywords
+  // Check keywords — require value-assignment context (keyword followed by =, :, is, คือ, or a value)
+  // This prevents false positives like "explaining how passwords work"
   for (const keyword of SENSITIVE_KEYWORDS) {
-    if (lower.includes(keyword)) return true;
+    const idx = lower.indexOf(keyword);
+    if (idx >= 0) {
+      // Check if there's an assignment operator or value nearby after the keyword
+      const afterKeyword = lower.substring(idx + keyword.length, idx + keyword.length + 20).trimStart();
+      const hasAssignment = /^[=:]\s*\S|^(is|คือ|เป็น)\s+\S/i.test(afterKeyword);
+      const isNoun = /^(s?\s|$)/.test(afterKeyword) && !/[=:]/.test(afterKeyword);
+      // For Thai/CJK keywords (non-ASCII), they are specific enough to always trigger
+      const isSpecificKeyword = /[^\x00-\x7F]/.test(keyword);
+      if (hasAssignment || (isSpecificKeyword && !isNoun)) return true;
+    }
   }
 
-  // Check patterns
+  // Check patterns (regex-based — these already require value context)
   for (const pattern of SENSITIVE_PATTERNS) {
     pattern.lastIndex = 0; // reset regex state
     if (pattern.test(text)) return true;
@@ -219,8 +229,10 @@ export function filterExportData(items: any[]): any[] {
 const INJECTION_PATTERNS = [
   /ignore\s+(all\s+)?previous\s+instructions/i,
   /ignore\s+(all\s+)?above\s+instructions/i,
-  /you\s+are\s+now\s+a?\s*(different|new)\s+(agent|assistant|ai|bot)/i,
-  /system\s*:\s*/i,
+  /ignore\s+(all\s+)?(system\s+)?prompt/i,
+  /you\s+are\s+now\s+a?\s*(different|new|DAN)\b/i,
+  /\bsystem\s*:\s*/i,
+  /\{\{\s*system\s*\}\}/i,
   /\[SYSTEM\]/i,
   /\[INST\]/i,
   /<<SYS>>/i,
@@ -228,9 +240,11 @@ const INJECTION_PATTERNS = [
   /act\s+as\s+(if\s+)?(you\s+are\s+)?(a\s+)?different/i,
   /forget\s+(everything|all|your)\s+(instructions|rules|guidelines)/i,
   /override\s+(your|all|the)\s+(instructions|rules|safety)/i,
-  /pretend\s+(you\s+are|to\s+be|that)/i,
+  /pretend\s+(you\s+(are|have)|to\s+be|that)/i,
   /jailbreak/i,
-  /DAN\s+mode/i,
+  /\bDAN\b/i,
+  /no\s+(restrictions|limitations|rules|boundaries)/i,
+  /reveal\s+(all\s+)?(secrets|passwords|keys)/i,
 ];
 
 export function detectPromptInjection(text: string): { detected: boolean; patterns: string[] } {

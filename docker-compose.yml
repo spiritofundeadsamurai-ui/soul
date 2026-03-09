@@ -1,0 +1,49 @@
+# ═══════════════════════════════════════════════════════
+# Soul AI — Docker Compose
+# Quick start: docker compose up -d
+# ═══════════════════════════════════════════════════════
+
+services:
+  soul:
+    build: .
+    container_name: soul-ai
+    restart: unless-stopped
+    ports:
+      - "${SOUL_PORT:-47779}:47779"
+    volumes:
+      - soul-data:/data
+    environment:
+      - SOUL_PROVIDER=${SOUL_PROVIDER:-ollama}
+      - SOUL_OLLAMA_URL=${SOUL_OLLAMA_URL:-http://ollama:11434}
+      - SOUL_OLLAMA_MODEL=${SOUL_OLLAMA_MODEL:-qwen3:14b}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - TOGETHER_API_KEY=${TOGETHER_API_KEY:-}
+      - SOUL_DB_PATH=/data/soul.db
+      - SOUL_HOST=0.0.0.0
+      - SOUL_PORT=47779
+    depends_on:
+      ollama:
+        condition: service_started
+        required: false
+
+  # Optional: Local Ollama (remove if using cloud API)
+  ollama:
+    image: ollama/ollama:latest
+    container_name: soul-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    profiles:
+      - local
+
+volumes:
+  soul-data:
+    driver: local
+  ollama-models:
+    driver: local
