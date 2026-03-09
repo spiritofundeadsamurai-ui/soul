@@ -888,6 +888,24 @@ function importPendingConfig() {
     } catch { /* ignore */ }
   }
 
+  // Import additional API provider (when user chose "Both" in setup)
+  const apiPendingPath = path.join(SOUL_DIR, "pending-api-provider.json");
+  if (fs.existsSync(apiPendingPath)) {
+    try {
+      const cfg = JSON.parse(fs.readFileSync(apiPendingPath, "utf-8"));
+      const result = addProvider({
+        providerId: cfg.providerId,
+        apiKey: cfg.apiKey || undefined,
+        modelId: cfg.modelId,
+        isDefault: false,
+      });
+      if (result.success) {
+        console.log(`${C.green}${BOX.dot} Imported cloud brain: ${cfg.providerName} / ${cfg.modelId}${C.reset}`);
+      }
+      fs.unlinkSync(apiPendingPath);
+    } catch { /* ignore */ }
+  }
+
   const featuresPath = path.join(SOUL_DIR, "pending-features.json");
   if (fs.existsSync(featuresPath)) {
     try {

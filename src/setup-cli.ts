@@ -1,19 +1,18 @@
 #!/usr/bin/env node
 
 /**
- * Soul Setup CLI — Interactive first-run setup
+ * Soul Setup — Beautiful interactive first-run experience
+ *
+ * Design principles:
+ * 1. Auto-detect everything (hardware, Ollama, models)
+ * 2. Minimal choices (brain → key → done)
+ * 3. Live test before finishing
+ * 4. Visual polish (logo, colors, progress)
+ * 5. Optional features deferred to chat ("soul_connect" later)
  *
  * Usage:
  *   npx soul-ai setup
  *   soul-setup
- *
- * Steps:
- * 1. Check system requirements (Node.js, RAM, OS)
- * 2. Choose brain type: Ollama (local/free) or API (cloud)
- * 3. Configure the chosen provider
- * 4. Set master passphrase
- * 5. Test brain connection
- * 6. Show usage instructions
  */
 
 import { execSync } from "child_process";
@@ -24,33 +23,45 @@ import * as readline from "readline";
 
 const SOUL_DIR = path.join(os.homedir(), ".soul");
 const DB_PATH = path.join(SOUL_DIR, "soul.db");
-const MIN_NODE = 18;
 
-// ─── Colors ───
+// ─── Colors & Symbols ───
 
 const C = {
   reset: "\x1b[0m",
   bold: "\x1b[1m",
   dim: "\x1b[2m",
+  italic: "\x1b[3m",
   red: "\x1b[31m",
   green: "\x1b[32m",
   yellow: "\x1b[33m",
   blue: "\x1b[34m",
   magenta: "\x1b[35m",
   cyan: "\x1b[36m",
+  white: "\x1b[37m",
+  gray: "\x1b[90m",
+  bgMagenta: "\x1b[45m",
+  bgCyan: "\x1b[46m",
 };
 
-function log(msg: string) { console.log(msg); }
-function ok(msg: string) { log(`${C.green}✓${C.reset} ${msg}`); }
-function warn(msg: string) { log(`${C.yellow}⚠${C.reset} ${msg}`); }
-function err(msg: string) { log(`${C.red}✗${C.reset} ${msg}`); }
-function info(msg: string) { log(`${C.cyan}ℹ${C.reset} ${msg}`); }
-function header(msg: string) { log(`\n${C.bold}${C.magenta}═══ ${msg} ═══${C.reset}\n`); }
+const BOX = { tl: "╭", tr: "╮", bl: "╰", br: "╯", h: "─", v: "│", dot: "●" };
+
+function log(msg = "") { console.log(msg); }
+function ok(msg: string) { log(`  ${C.green}✓${C.reset} ${msg}`); }
+function warn(msg: string) { log(`  ${C.yellow}⚠${C.reset} ${msg}`); }
+function err(msg: string) { log(`  ${C.red}✗${C.reset} ${msg}`); }
+function info(msg: string) { log(`  ${C.cyan}ℹ${C.reset} ${msg}`); }
+function line(char = BOX.h, len = 60) { return char.repeat(len); }
+
+function step(num: number, title: string) {
+  log();
+  log(`  ${C.magenta}${C.bold}${BOX.dot} Step ${num}${C.reset}  ${C.bold}${title}${C.reset}`);
+  log(`  ${C.dim}${line(BOX.h, 50)}${C.reset}`);
+}
 
 function ask(question: string): Promise<string> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   return new Promise(resolve => {
-    rl.question(`${C.cyan}?${C.reset} ${question} `, answer => {
+    rl.question(`  ${C.cyan}❯${C.reset} ${question} `, answer => {
       rl.close();
       resolve(answer.trim());
     });
@@ -60,9 +71,8 @@ function ask(question: string): Promise<string> {
 function askSecret(question: string): Promise<string> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   return new Promise(resolve => {
-    // Try to hide input on supported terminals
     if (process.stdin.isTTY) {
-      process.stdout.write(`${C.cyan}?${C.reset} ${question} `);
+      process.stdout.write(`  ${C.cyan}❯${C.reset} ${question} `);
       const stdin = process.stdin;
       const wasRaw = stdin.isRaw;
       stdin.setRawMode(true);
@@ -76,12 +86,9 @@ function askSecret(question: string): Promise<string> {
           rl.close();
           resolve(input);
         } else if (c === "\u007f" || c === "\b") {
-          if (input.length > 0) {
-            input = input.slice(0, -1);
-            process.stdout.write("\b \b");
-          }
+          if (input.length > 0) { input = input.slice(0, -1); process.stdout.write("\b \b"); }
         } else if (c === "\u0003") {
-          // Ctrl+C
+          stdin.setRawMode(wasRaw || false);
           process.exit(0);
         } else {
           input += c;
@@ -90,390 +97,404 @@ function askSecret(question: string): Promise<string> {
       };
       stdin.on("data", onData);
     } else {
-      rl.question(`${C.cyan}?${C.reset} ${question} `, answer => {
-        rl.close();
-        resolve(answer.trim());
-      });
+      rl.question(`  ${C.cyan}❯${C.reset} ${question} `, answer => { rl.close(); resolve(answer.trim()); });
     }
   });
 }
 
 function exec(cmd: string): string | null {
-  try {
-    return execSync(cmd, { encoding: "utf-8", timeout: 30000, stdio: ["pipe", "pipe", "pipe"] }).trim();
-  } catch { return null; }
+  try { return execSync(cmd, { encoding: "utf-8", timeout: 30000, stdio: ["pipe", "pipe", "pipe"] }).trim(); }
+  catch { return null; }
 }
 
-function getRAM(): number {
-  return Math.round(os.totalmem() / (1024 ** 3) * 10) / 10;
-}
+function getRAM(): number { return Math.round(os.totalmem() / (1024 ** 3) * 10) / 10; }
 
-// ─── Provider Configs (matches llm-connector.ts presets) ───
+function sleep(ms: number): Promise<void> { return new Promise(r => setTimeout(r, ms)); }
+
+// ─── Provider configs ───
 
 const API_PROVIDERS = [
-  { id: "groq",      name: "Groq (Free Tier Available)", model: "qwen-qwq-32b",       free: true,  url: "https://api.groq.com/openai/v1",              signupUrl: "https://console.groq.com" },
-  { id: "gemini",    name: "Google Gemini (Free Tier)",   model: "gemini-2.5-flash",    free: true,  url: "https://generativelanguage.googleapis.com/v1beta", signupUrl: "https://aistudio.google.com/apikey" },
-  { id: "deepseek",  name: "DeepSeek (Very Cheap)",       model: "deepseek-chat",       free: false, url: "https://api.deepseek.com/v1",                 signupUrl: "https://platform.deepseek.com" },
-  { id: "openai",    name: "OpenAI (GPT-4o)",             model: "gpt-4o-mini",         free: false, url: "https://api.openai.com/v1",                   signupUrl: "https://platform.openai.com/api-keys" },
-  { id: "anthropic", name: "Anthropic Claude",            model: "claude-haiku-4-5-20251001", free: false, url: "https://api.anthropic.com",              signupUrl: "https://console.anthropic.com" },
-  { id: "together",  name: "Together AI",                 model: "Qwen/Qwen3-Coder-32B-Instruct", free: false, url: "https://api.together.xyz/v1",      signupUrl: "https://api.together.xyz" },
+  { id: "groq",      name: "Groq",            model: "qwen/qwen3-32b",            free: true,  type: "openai-compatible", url: "https://api.groq.com/openai/v1",              signupUrl: "https://console.groq.com",            desc: "Ultra-fast, free tier" },
+  { id: "gemini",    name: "Google Gemini",    model: "gemini-2.5-flash",           free: true,  type: "google",            url: "https://generativelanguage.googleapis.com/v1beta", signupUrl: "https://aistudio.google.com/apikey", desc: "Free tier, huge context" },
+  { id: "deepseek",  name: "DeepSeek",         model: "deepseek-chat",              free: false, type: "openai-compatible", url: "https://api.deepseek.com/v1",                 signupUrl: "https://platform.deepseek.com",       desc: "Very cheap, high quality" },
+  { id: "openai",    name: "OpenAI",           model: "gpt-4o-mini",                free: false, type: "openai-compatible", url: "https://api.openai.com/v1",                   signupUrl: "https://platform.openai.com/api-keys", desc: "GPT-4o models" },
+  { id: "anthropic", name: "Anthropic Claude", model: "claude-haiku-4-5-20251001",  free: false, type: "anthropic",         url: "https://api.anthropic.com",                   signupUrl: "https://console.anthropic.com",        desc: "Claude models" },
+  { id: "together",  name: "Together AI",      model: "Qwen/Qwen3-Coder-32B-Instruct", free: false, type: "openai-compatible", url: "https://api.together.xyz/v1",           signupUrl: "https://api.together.xyz",             desc: "Many open models" },
 ];
 
-// ─── Save provider to DB (without importing heavy modules) ───
+function saveConfig(providerId: string, providerName: string, providerType: string, baseUrl: string, apiKey: string, modelId: string) {
+  fs.mkdirSync(SOUL_DIR, { recursive: true });
+  const configPath = path.join(SOUL_DIR, "pending-provider.json");
+  fs.writeFileSync(configPath, JSON.stringify({
+    providerId, providerName, providerType, baseUrl, apiKey, modelId, modelName: modelId,
+    createdAt: new Date().toISOString(),
+  }, null, 2));
+}
 
-function saveProviderToDB(providerId: string, providerName: string, providerType: string, baseUrl: string, apiKey: string, modelId: string, modelName: string) {
-  try {
-    // We can't easily import the Soul DB module here (it uses ESM + SQLite),
-    // so save a config file that Soul reads on first run
-    const configPath = path.join(SOUL_DIR, "pending-provider.json");
-    const config = { providerId, providerName, providerType, baseUrl, apiKey, modelId, modelName, createdAt: new Date().toISOString() };
-    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-    return true;
-  } catch { return false; }
+// ─── Auto-Detect System ───
+
+interface SystemInfo {
+  nodeVersion: number;
+  platform: string;
+  platformName: string;
+  arch: string;
+  ram: number;
+  cpu: string;
+  ollamaInstalled: boolean;
+  ollamaVersion: string;
+  ollamaRunning: boolean;
+  ollamaModels: string[];
+  hasExistingDB: boolean;
+  hasGPU: boolean;
+  gpuInfo: string;
+}
+
+function detectSystem(): SystemInfo {
+  const platform = os.platform();
+  const ram = getRAM();
+
+  // Ollama
+  const ollamaVersion = exec("ollama --version") || "";
+  const ollamaInstalled = ollamaVersion.length > 0;
+  const ollamaRunning = exec("ollama ps") !== null;
+  let ollamaModels: string[] = [];
+  if (ollamaInstalled) {
+    const list = exec("ollama list");
+    if (list) {
+      ollamaModels = list.split("\n")
+        .slice(1) // skip header
+        .map(line => line.split(/\s+/)[0])
+        .filter(m => m && m.length > 0);
+    }
+  }
+
+  // GPU
+  let hasGPU = false;
+  let gpuInfo = "";
+  if (platform === "win32") {
+    const gpu = exec("wmic path win32_VideoController get name 2>NUL");
+    if (gpu) {
+      const gpuLines = gpu.split("\n").map(l => l.trim()).filter(l => l && l !== "Name");
+      if (gpuLines.length > 0) {
+        gpuInfo = gpuLines[0];
+        hasGPU = /nvidia|geforce|rtx|gtx|radeon|rx\s/i.test(gpuInfo);
+      }
+    }
+  } else {
+    const nvidia = exec("nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null");
+    if (nvidia) { gpuInfo = nvidia; hasGPU = true; }
+  }
+
+  return {
+    nodeVersion: parseInt(process.versions.node.split(".")[0]),
+    platform,
+    platformName: platform === "win32" ? "Windows" : platform === "darwin" ? "macOS" : "Linux",
+    arch: os.arch(),
+    ram,
+    cpu: os.cpus()[0]?.model || "Unknown",
+    ollamaInstalled,
+    ollamaVersion,
+    ollamaRunning,
+    ollamaModels,
+    hasExistingDB: fs.existsSync(DB_PATH),
+    hasGPU,
+    gpuInfo,
+  };
+}
+
+function recommendModel(ram: number, hasGPU: boolean): { model: string; size: string; quality: string } {
+  if (ram >= 32 && hasGPU) return { model: "qwen3:32b", size: "~20 GB", quality: "Excellent — coding, reasoning, multilingual" };
+  if (ram >= 24) return { model: "qwen3:14b", size: "~9 GB", quality: "Great — balanced speed + quality" };
+  if (ram >= 16) return { model: "qwen3:8b", size: "~5 GB", quality: "Good — fast, efficient" };
+  return { model: "qwen3:8b", size: "~5 GB", quality: "Lightweight — works on 8GB+ RAM" };
 }
 
 // ─── Main Setup ───
 
 async function main() {
-  log(`\n${C.bold}${C.magenta}╔════════════════════════════════════════╗${C.reset}`);
-  log(`${C.bold}${C.magenta}║          Soul AI Setup                 ║${C.reset}`);
-  log(`${C.bold}${C.magenta}║    Your Personal AI Companion          ║${C.reset}`);
-  log(`${C.bold}${C.magenta}╚════════════════════════════════════════╝${C.reset}\n`);
-  log(`${C.dim}Local-first. Private. Loyal.${C.reset}\n`);
+  // ─── Logo ───
+  log();
+  log(`  ${C.magenta}${C.bold}${BOX.tl}${line(BOX.h, 54)}${BOX.tr}${C.reset}`);
+  log(`  ${C.magenta}${C.bold}${BOX.v}${C.reset}                                                      ${C.magenta}${C.bold}${BOX.v}${C.reset}`);
+  log(`  ${C.magenta}${C.bold}${BOX.v}${C.reset}   ${C.magenta}${C.bold}███████╗  ██████╗  ██╗   ██╗ ██╗     ${C.reset}           ${C.magenta}${C.bold}${BOX.v}${C.reset}`);
+  log(`  ${C.magenta}${C.bold}${BOX.v}${C.reset}   ${C.magenta}${C.bold}██╔════╝ ██╔═══██╗ ██║   ██║ ██║     ${C.reset}           ${C.magenta}${C.bold}${BOX.v}${C.reset}`);
+  log(`  ${C.magenta}${C.bold}${BOX.v}${C.reset}   ${C.magenta}${C.bold}███████╗ ██║   ██║ ██║   ██║ ██║     ${C.reset}           ${C.magenta}${C.bold}${BOX.v}${C.reset}`);
+  log(`  ${C.magenta}${C.bold}${BOX.v}${C.reset}   ${C.magenta}${C.bold}╚════██║ ██║   ██║ ██║   ██║ ██║     ${C.reset}           ${C.magenta}${C.bold}${BOX.v}${C.reset}`);
+  log(`  ${C.magenta}${C.bold}${BOX.v}${C.reset}   ${C.magenta}${C.bold}███████║ ╚██████╔╝ ╚██████╔╝ ███████╗${C.reset}           ${C.magenta}${C.bold}${BOX.v}${C.reset}`);
+  log(`  ${C.magenta}${C.bold}${BOX.v}${C.reset}   ${C.magenta}${C.bold}╚══════╝  ╚═════╝   ╚═════╝  ╚══════╝${C.reset}           ${C.magenta}${C.bold}${BOX.v}${C.reset}`);
+  log(`  ${C.magenta}${C.bold}${BOX.v}${C.reset}                                                      ${C.magenta}${C.bold}${BOX.v}${C.reset}`);
+  log(`  ${C.magenta}${C.bold}${BOX.v}${C.reset}   ${C.dim}Your Personal AI Companion${C.reset}                         ${C.magenta}${C.bold}${BOX.v}${C.reset}`);
+  log(`  ${C.magenta}${C.bold}${BOX.v}${C.reset}   ${C.dim}Local-first ${C.gray}•${C.dim} Private ${C.gray}•${C.dim} Loyal ${C.gray}•${C.dim} 308+ tools${C.reset}          ${C.magenta}${C.bold}${BOX.v}${C.reset}`);
+  log(`  ${C.magenta}${C.bold}${BOX.v}${C.reset}                                                      ${C.magenta}${C.bold}${BOX.v}${C.reset}`);
+  log(`  ${C.magenta}${C.bold}${BOX.bl}${line(BOX.h, 54)}${BOX.br}${C.reset}`);
+  log();
 
-  // ═══ Step 1: System Check ═══
-  header("Step 1: System Requirements");
+  // ─── Auto-detect ───
+  process.stdout.write(`  ${C.dim}Scanning your system...${C.reset}`);
+  const sys = detectSystem();
+  process.stdout.write(`\r  ${C.green}✓${C.reset} System scanned                \n`);
+  log();
 
-  const nodeVersion = parseInt(process.versions.node.split(".")[0]);
-  if (nodeVersion >= MIN_NODE) {
-    ok(`Node.js v${process.versions.node}`);
-  } else {
-    err(`Node.js v${process.versions.node} — need v${MIN_NODE}+`);
+  // Show system summary in a compact box
+  log(`  ${C.dim}${BOX.tl}${line(BOX.h, 50)}${BOX.tr}${C.reset}`);
+  log(`  ${C.dim}${BOX.v}${C.reset}  ${C.bold}System${C.reset}   ${sys.platformName} ${sys.arch} ${C.gray}•${C.reset} Node ${process.versions.node}     ${C.dim}${BOX.v}${C.reset}`);
+  log(`  ${C.dim}${BOX.v}${C.reset}  ${C.bold}RAM${C.reset}      ${sys.ram} GB${sys.ram >= 16 ? ` ${C.green}✓${C.reset}` : ` ${C.yellow}(8GB+ recommended)${C.reset}`}${" ".repeat(Math.max(0, 30 - String(sys.ram).length))}${C.dim}${BOX.v}${C.reset}`);
+  if (sys.hasGPU) {
+    log(`  ${C.dim}${BOX.v}${C.reset}  ${C.bold}GPU${C.reset}      ${sys.gpuInfo.substring(0, 38)}${" ".repeat(Math.max(0, 30 - Math.min(38, sys.gpuInfo.length)))}${C.dim}${BOX.v}${C.reset}`);
+  }
+  log(`  ${C.dim}${BOX.v}${C.reset}  ${C.bold}Ollama${C.reset}   ${sys.ollamaInstalled ? `${C.green}Installed${C.reset} ${sys.ollamaModels.length > 0 ? `(${sys.ollamaModels.length} models)` : ""}` : `${C.yellow}Not installed${C.reset}`}${" ".repeat(Math.max(0, 25))}${C.dim}${BOX.v}${C.reset}`);
+  if (sys.hasExistingDB) {
+    log(`  ${C.dim}${BOX.v}${C.reset}  ${C.bold}Data${C.reset}     ${C.green}Existing Soul database found${C.reset}       ${C.dim}${BOX.v}${C.reset}`);
+  }
+  log(`  ${C.dim}${BOX.bl}${line(BOX.h, 50)}${BOX.br}${C.reset}`);
+  log();
+
+  // Validate Node.js
+  if (sys.nodeVersion < 18) {
+    err(`Node.js v${process.versions.node} — need v18+. Please upgrade Node.js.`);
     process.exit(1);
   }
 
-  const platform = os.platform();
-  const platformName = platform === "win32" ? "Windows" : platform === "darwin" ? "macOS" : "Linux";
-  ok(`Platform: ${platformName} (${os.arch()})`);
+  // Create data directory
+  fs.mkdirSync(SOUL_DIR, { recursive: true });
 
-  const ram = getRAM();
-  ok(`RAM: ${ram} GB` + (ram < 8 ? ` ${C.yellow}(8GB+ recommended for local AI)${C.reset}` : ""));
-  ok(`CPU: ${os.cpus()[0]?.model || "Unknown"}`);
+  // ═══ Step 1: Choose Brain ═══
+  step(1, "Choose Soul's Brain");
+  log();
 
-  // Create Soul directory
-  if (!fs.existsSync(SOUL_DIR)) {
-    fs.mkdirSync(SOUL_DIR, { recursive: true });
-    ok(`Created data directory: ${SOUL_DIR}`);
-  } else {
-    ok(`Data directory: ${SOUL_DIR}`);
+  // Smart recommendation based on what's detected
+  if (sys.ollamaInstalled && sys.ollamaModels.length > 0) {
+    info(`Ollama detected with ${sys.ollamaModels.length} model(s): ${C.bold}${sys.ollamaModels.slice(0, 3).join(", ")}${C.reset}`);
+    log();
   }
 
-  // ═══ Step 2: Choose Brain ═══
-  header("Step 2: Choose Soul's Brain");
+  const rec = recommendModel(sys.ram, sys.hasGPU);
 
-  log(`  Soul needs an AI brain to think. Choose one:\n`);
-  log(`  ${C.green}[1]${C.reset} ${C.bold}Ollama (Local/Free)${C.reset}`);
-  log(`      ${C.dim}Run AI on YOUR machine. No internet needed. 100% private.${C.reset}`);
-  log(`      ${C.dim}Needs: 8GB+ RAM, ~5-20GB disk for model${C.reset}\n`);
-  log(`  ${C.cyan}[2]${C.reset} ${C.bold}Cloud API (OpenAI / Gemini / Groq / DeepSeek)${C.reset}`);
-  log(`      ${C.dim}Use a cloud AI provider. Needs API key. Some have free tiers.${C.reset}`);
-  log(`      ${C.dim}Faster, smarter models. Works on any machine.${C.reset}\n`);
-  log(`  ${C.yellow}[3]${C.reset} ${C.bold}Both (Recommended)${C.reset}`);
-  log(`      ${C.dim}Ollama for daily use + Cloud API for complex tasks.${C.reset}\n`);
+  log(`  ${C.green}[1]${C.reset} ${C.bold}🖥️  Ollama — Local & Free${C.reset}`);
+  log(`      ${C.dim}AI runs on YOUR machine. 100% private. No internet needed.${C.reset}`);
+  if (sys.ollamaInstalled) {
+    log(`      ${C.green}✓ Ollama ready${C.reset} ${C.dim}— Recommended: ${rec.model} (${rec.quality})${C.reset}`);
+  } else {
+    log(`      ${C.yellow}⚠ Ollama not installed${C.reset} ${C.dim}— will help you set up${C.reset}`);
+  }
+  log();
 
-  const brainChoice = await ask("Choose [1/2/3]: ");
+  log(`  ${C.cyan}[2]${C.reset} ${C.bold}☁️  Cloud API — Fast & Powerful${C.reset}`);
+  log(`      ${C.dim}OpenAI, Gemini, Groq (free!), DeepSeek, Claude, Together.${C.reset}`);
+  log(`      ${C.dim}Works on any machine. Some providers have free tiers.${C.reset}`);
+  log();
+
+  log(`  ${C.yellow}[3]${C.reset} ${C.bold}🔥 Both — Best of Both Worlds${C.reset} ${C.green}(recommended)${C.reset}`);
+  log(`      ${C.dim}Local for privacy + Cloud for power. Soul auto-routes.${C.reset}`);
+  log();
+
+  const brainChoice = await ask("Choose [1/2/3]:");
   const wantOllama = ["1", "3"].includes(brainChoice);
   const wantAPI = ["2", "3"].includes(brainChoice);
 
-  // ═══ Step 3a: Ollama Setup ═══
+  // ═══ Step 2: Configure Brain(s) ═══
+  let ollamaReady = false;
+  let apiReady = false;
+
   if (wantOllama) {
-    header("Step 3: Ollama Setup");
+    step(2, wantAPI ? "Setup Local Brain (Ollama)" : "Setup Brain");
+    log();
 
-    const ollamaVersion = exec("ollama --version");
-    if (ollamaVersion) {
-      ok(`Ollama installed: ${ollamaVersion}`);
-
-      // Check running models
-      const modelList = exec("ollama list");
-      if (modelList) {
-        const hasModel = modelList.includes("qwen3") || modelList.includes("phi4") || modelList.includes("llama");
-        if (hasModel) {
-          ok("AI model already installed");
-          log(`${C.dim}${modelList}${C.reset}`);
-        } else {
-          await pullOllamaModel(ram);
-        }
-      } else {
-        await pullOllamaModel(ram);
-      }
-
-      // Save Ollama as provider
-      let ollamaModel = "qwen3:8b";
-      if (ram >= 24) ollamaModel = "qwen3:14b";
-      else if (ram >= 32) ollamaModel = "qwen3:32b";
-
-      // Check what's actually installed
-      const installed = exec("ollama list");
-      if (installed) {
-        if (installed.includes("qwen3:14b")) ollamaModel = "qwen3:14b";
-        else if (installed.includes("qwen3:32b")) ollamaModel = "qwen3:32b";
-        else if (installed.includes("qwen3:8b")) ollamaModel = "qwen3:8b";
-      }
-
-      saveProviderToDB("ollama", "Ollama (Local)", "ollama", "http://localhost:11434", "", ollamaModel, ollamaModel);
-      ok(`Default brain: Ollama / ${ollamaModel}`);
-
-    } else {
-      warn("Ollama not installed");
-      log("");
-
-      const installUrl = platform === "win32"
+    if (!sys.ollamaInstalled) {
+      warn("Ollama not installed yet.");
+      log();
+      const installUrl = sys.platform === "win32"
         ? "https://ollama.com/download/windows"
-        : platform === "darwin"
+        : sys.platform === "darwin"
         ? "https://ollama.com/download/mac"
         : "https://ollama.com/download/linux";
 
-      info(`Download Ollama: ${C.cyan}${installUrl}${C.reset}`);
-      if (platform === "linux") {
-        info(`Or: ${C.cyan}curl -fsSL https://ollama.com/install.sh | sh${C.reset}`);
+      info(`Download from: ${C.cyan}${C.bold}${installUrl}${C.reset}`);
+      if (sys.platform === "linux") {
+        info(`Or run: ${C.cyan}curl -fsSL https://ollama.com/install.sh | sh${C.reset}`);
       }
-
-      log("");
-      info("After installing Ollama, run this setup again.");
+      log();
+      info("Install Ollama, then run this setup again.");
 
       if (!wantAPI) {
-        const cont = await ask("Continue to set up a Cloud API instead? (y/n)");
-        if (cont.toLowerCase() !== "y") {
-          log("\nInstall Ollama first, then run: soul-setup");
+        const cont = await ask("Set up a Cloud API instead? (y/n):");
+        if (cont.toLowerCase() === "y") {
+          // Fall through to API setup
+        } else {
+          log();
+          info(`Run ${C.bold}soul-setup${C.reset} again after installing Ollama.`);
           process.exit(0);
+        }
+      }
+    } else {
+      // Ollama is installed — check for models
+      if (sys.ollamaModels.length > 0) {
+        ok(`Models found: ${C.bold}${sys.ollamaModels.slice(0, 5).join(", ")}${C.reset}`);
+
+        // Pick best available model
+        let bestModel = sys.ollamaModels[0];
+        const preferred = ["qwen3:32b", "qwen3-coder:32b", "qwen3:14b", "qwen3-coder:14b", "qwen3:8b"];
+        for (const p of preferred) {
+          if (sys.ollamaModels.includes(p)) { bestModel = p; break; }
+        }
+
+        log();
+        log(`  ${C.dim}Available models:${C.reset}`);
+        for (let i = 0; i < Math.min(sys.ollamaModels.length, 8); i++) {
+          const m = sys.ollamaModels[i];
+          const isBest = m === bestModel;
+          log(`  ${isBest ? C.green + "▸" : " "} ${C.bold}${m}${C.reset}${isBest ? ` ${C.green}← recommended${C.reset}` : ""}`);
+        }
+        log();
+
+        const modelChoice = await ask(`Use ${C.bold}${bestModel}${C.reset}? (Enter for yes, or type model name):`);
+        const selectedModel = modelChoice.trim() || bestModel;
+
+        saveConfig("ollama", "Ollama (Local)", "ollama", "http://localhost:11434", "", selectedModel);
+        ok(`Brain set: ${C.bold}Ollama / ${selectedModel}${C.reset}`);
+        ollamaReady = true;
+
+      } else {
+        // No models — offer to download
+        info(`No AI models found. Let's download one.`);
+        log();
+        log(`  ${C.bold}Recommended for your system (${sys.ram}GB RAM${sys.hasGPU ? " + GPU" : ""}):${C.reset}`);
+        log(`  ${C.green}▸${C.reset} ${C.bold}${rec.model}${C.reset} (${rec.size}) — ${rec.quality}`);
+        log();
+
+        const pull = await ask(`Download ${rec.model}? (y/n):`);
+        if (pull.toLowerCase() === "y") {
+          log();
+          log(`  ${C.dim}Downloading ${rec.model}... (this may take a few minutes)${C.reset}`);
+          try {
+            execSync(`ollama pull ${rec.model}`, { stdio: "inherit", timeout: 600000 });
+            log();
+            ok(`${rec.model} downloaded!`);
+            saveConfig("ollama", "Ollama (Local)", "ollama", "http://localhost:11434", "", rec.model);
+            ollamaReady = true;
+          } catch {
+            warn(`Download failed. Try later: ${C.bold}ollama pull ${rec.model}${C.reset}`);
+          }
+        } else {
+          info(`You can download a model later: ${C.bold}ollama pull ${rec.model}${C.reset}`);
+          saveConfig("ollama", "Ollama (Local)", "ollama", "http://localhost:11434", "", rec.model);
+          ollamaReady = true;
         }
       }
     }
   }
 
-  // ═══ Step 3b: Cloud API Setup ═══
-  if (wantAPI || (!wantOllama && brainChoice !== "1")) {
-    header(wantOllama ? "Step 3b: Cloud API (Backup Brain)" : "Step 3: Cloud API Setup");
+  if (wantAPI || (!ollamaReady && wantOllama)) {
+    const stepNum = wantOllama && ollamaReady ? 3 : 2;
+    step(stepNum, wantOllama ? "Setup Cloud Brain (Backup)" : "Setup Brain");
+    log();
 
-    log(`  Choose a cloud AI provider:\n`);
+    log(`  ${C.bold}Choose a provider:${C.reset}`);
+    log();
     for (let i = 0; i < API_PROVIDERS.length; i++) {
       const p = API_PROVIDERS[i];
-      const freeTag = p.free ? ` ${C.green}(free tier)${C.reset}` : "";
-      log(`  ${C.cyan}[${i + 1}]${C.reset} ${p.name}${freeTag}`);
+      const tag = p.free ? `${C.green} FREE${C.reset}` : `${C.dim} paid${C.reset}`;
+      log(`  ${C.cyan}[${i + 1}]${C.reset} ${C.bold}${p.name}${C.reset}${tag} ${C.dim}— ${p.desc}${C.reset}`);
     }
-    log("");
+    log();
 
-    const providerIdx = parseInt(await ask(`Choose [1-${API_PROVIDERS.length}]: `)) - 1;
+    const providerIdx = parseInt(await ask(`Choose [1-${API_PROVIDERS.length}]:`)) - 1;
 
     if (providerIdx >= 0 && providerIdx < API_PROVIDERS.length) {
       const provider = API_PROVIDERS[providerIdx];
+      log();
+      info(`Get your API key: ${C.cyan}${C.bold}${provider.signupUrl}${C.reset}`);
+      log();
 
-      log("");
-      info(`Get your API key from: ${C.cyan}${provider.signupUrl}${C.reset}`);
-      log("");
-
-      const apiKey = await askSecret(`Enter ${provider.name} API key: `);
+      const apiKey = await askSecret(`Paste ${provider.name} API key:`);
 
       if (apiKey) {
-        const providerType = provider.id === "gemini" ? "google" : provider.id === "anthropic" ? "anthropic" : "openai-compatible";
-        saveProviderToDB(provider.id, provider.name, providerType, provider.url, apiKey, provider.model, provider.model);
-        ok(`Configured: ${provider.name} / ${provider.model}`);
+        // If Ollama is also configured, save API as non-default
+        if (!ollamaReady) {
+          saveConfig(provider.id, provider.name, provider.type, provider.url, apiKey, provider.model);
+        } else {
+          // Save as additional provider
+          const configPath = path.join(SOUL_DIR, "pending-api-provider.json");
+          fs.writeFileSync(configPath, JSON.stringify({
+            providerId: provider.id, providerName: provider.name, providerType: provider.type,
+            baseUrl: provider.url, apiKey, modelId: provider.model, modelName: provider.model,
+          }, null, 2));
+        }
+        ok(`${provider.name} configured (${provider.model})`);
+        apiReady = true;
       } else {
-        warn("No API key entered. You can add one later with: soul /model");
-      }
-    } else {
-      warn("Invalid choice. You can add a provider later.");
-    }
-  }
-
-  // ═══ Step 4: Master Passphrase ═══
-  header("Step 4: Master Passphrase");
-
-  info("Soul bonds with ONE master. The passphrase protects your data.");
-  info("Choose something memorable — you'll need it for sensitive operations.");
-  log("");
-
-  if (fs.existsSync(DB_PATH)) {
-    ok("Soul database already exists — master passphrase already set.");
-    info("Use the soul_setup tool to change it if needed.");
-  } else {
-    info("Your passphrase will be set when you first start Soul.");
-    info("Just tell Soul: \"setup\" or use the soul_setup tool.");
-  }
-
-  // ═══ Step 5: Test Connection ═══
-  header("Step 5: Testing Brain Connection");
-
-  const ollamaRunning = exec("ollama ps") !== null;
-  if (ollamaRunning) {
-    ok("Ollama is running");
-
-    // Quick test
-    try {
-      const testResult = exec('ollama run qwen3:14b "Say hello in one word" --nowordwrap 2>&1');
-      if (testResult && testResult.length > 0 && testResult.length < 500) {
-        ok(`Brain test: "${testResult.substring(0, 100)}"`);
-      } else {
-        info("Brain loaded but response was empty — this is OK, model may still be loading.");
-      }
-    } catch {
-      info("Could not test brain — Ollama may still be loading the model.");
-    }
-  } else {
-    if (wantOllama) {
-      warn("Ollama is not running. Start it with: ollama serve");
-    }
-  }
-
-  // Check pending provider config
-  const pendingPath = path.join(SOUL_DIR, "pending-provider.json");
-  if (fs.existsSync(pendingPath)) {
-    ok("Brain configuration saved — will be activated on first Soul start.");
-  }
-
-  // ═══ Step 6: Optional Features ═══
-  header("Step 6: Optional Features");
-
-  log(`  Soul has extra features that need API keys/tokens.\n`);
-  log(`  ${C.dim}These are OPTIONAL — Soul works fine without them.${C.reset}`);
-  log(`  ${C.dim}You can always set these up later in chat.${C.reset}\n`);
-
-  const OPTIONAL_FEATURES = [
-    {
-      id: "telegram",
-      name: "Telegram Bot",
-      desc: "Send messages & notifications via Telegram",
-      keyName: "Bot Token",
-      howToGet: "Talk to @BotFather on Telegram → /newbot → copy token",
-      configKey: "telegram_bot_token",
-    },
-    {
-      id: "discord",
-      name: "Discord Webhook",
-      desc: "Send messages to a Discord channel",
-      keyName: "Webhook URL",
-      howToGet: "Server Settings → Integrations → Webhooks → New → Copy URL",
-      configKey: "discord_webhook_url",
-    },
-    {
-      id: "brave_search",
-      name: "Brave Search API",
-      desc: "Premium web search (free tier: 2000 queries/month)",
-      keyName: "API Key",
-      howToGet: "https://brave.com/search/api/ → Get API Key",
-      configKey: "brave_search_api_key",
-    },
-    {
-      id: "google_search",
-      name: "Google Custom Search",
-      desc: "Google search via API (free tier: 100 queries/day)",
-      keyName: "API Key + Search Engine ID",
-      howToGet: "https://developers.google.com/custom-search/v1/overview",
-      configKey: "google_search_api_key",
-    },
-  ];
-
-  for (let i = 0; i < OPTIONAL_FEATURES.length; i++) {
-    const f = OPTIONAL_FEATURES[i];
-    log(`  ${C.cyan}[${i + 1}]${C.reset} ${C.bold}${f.name}${C.reset} — ${f.desc}`);
-  }
-  log(`  ${C.yellow}[0]${C.reset} ${C.dim}Skip all — set up later${C.reset}`);
-  log("");
-
-  const featureChoice = await ask("Enter numbers to set up (e.g. 1,3) or 0 to skip: ");
-
-  if (featureChoice !== "0" && featureChoice.trim() !== "") {
-    const choices = featureChoice.split(/[,\s]+/).map(s => parseInt(s.trim())).filter(n => n >= 1 && n <= OPTIONAL_FEATURES.length);
-
-    const featureConfigs: Record<string, string> = {};
-
-    for (const idx of choices) {
-      const feature = OPTIONAL_FEATURES[idx - 1];
-      log("");
-      info(`${C.bold}${feature.name}${C.reset}`);
-      info(`How to get: ${C.dim}${feature.howToGet}${C.reset}`);
-
-      const key = await askSecret(`Enter ${feature.keyName}: `);
-      if (key) {
-        featureConfigs[feature.configKey] = key;
-        ok(`${feature.name} configured`);
-      } else {
-        warn(`${feature.name} skipped — no key entered`);
+        warn("No key entered. You can add one later in chat.");
       }
     }
+  }
 
-    // Save feature configs
-    if (Object.keys(featureConfigs).length > 0) {
-      const configPath = path.join(SOUL_DIR, "pending-features.json");
-      fs.writeFileSync(configPath, JSON.stringify(featureConfigs, null, 2));
-      ok(`${Object.keys(featureConfigs).length} feature(s) configured — will be activated on first Soul start.`);
+  // ═══ Step 3: Live Test ═══
+  if (ollamaReady || apiReady) {
+    const testStep = (wantOllama && wantAPI) ? 4 : 3;
+    step(testStep, "Testing Brain");
+    log();
+
+    let testPassed = false;
+
+    if (ollamaReady && sys.ollamaRunning) {
+      process.stdout.write(`  ${C.dim}Testing Ollama...${C.reset}`);
+      try {
+        const model = sys.ollamaModels[0] || "qwen3:8b";
+        const result = exec(`ollama run ${model} "Say 'Soul is ready' in one sentence" --nowordwrap 2>&1`);
+        if (result && result.length > 0 && result.length < 500) {
+          process.stdout.write(`\r  ${C.green}✓${C.reset} Brain responds: ${C.italic}"${result.substring(0, 80)}"${C.reset}${" ".repeat(20)}\n`);
+          testPassed = true;
+        } else {
+          process.stdout.write(`\r  ${C.yellow}⚠${C.reset} Brain loaded (model may still be warming up)${" ".repeat(20)}\n`);
+          testPassed = true;
+        }
+      } catch {
+        process.stdout.write(`\r  ${C.yellow}⚠${C.reset} Could not test — Ollama may still be loading${" ".repeat(20)}\n`);
+      }
+    } else if (ollamaReady && !sys.ollamaRunning) {
+      warn(`Ollama is not running. Start it with: ${C.bold}ollama serve${C.reset}`);
+      testPassed = true; // Config is saved, just not running
     }
-  } else {
-    info("Skipped. You can set up features later by telling Soul in chat.");
-  }
 
-  // ═══ Step 7: Usage Instructions ═══
-  header("Setup Complete!");
+    if (apiReady && !testPassed) {
+      ok("Cloud API configured — will be tested on first chat.");
+      testPassed = true;
+    }
 
-  log(`${C.bold}How to use Soul:${C.reset}\n`);
-
-  log(`  ${C.cyan}1. Chat directly (standalone agent):${C.reset}`);
-  log(`     ${C.bold}soul${C.reset}`);
-  log(`     ${C.dim}Just type and talk. Soul thinks using your configured brain.${C.reset}\n`);
-
-  log(`  ${C.cyan}2. Quick question:${C.reset}`);
-  log(`     ${C.bold}soul "what is the meaning of life?"${C.reset}\n`);
-
-  log(`  ${C.cyan}3. Web UI:${C.reset}`);
-  log(`     ${C.bold}soul-server${C.reset}`);
-  log(`     ${C.dim}Then open: http://localhost:47779${C.reset}\n`);
-
-  log(`  ${C.cyan}4. With Claude Code / Cursor (MCP mode):${C.reset}`);
-  log(`     Add to MCP config:`);
-  log(`     ${C.dim}{ "soul": { "command": "soul-mcp" } }${C.reset}\n`);
-
-  log(`  ${C.cyan}5. Useful commands in chat:${C.reset}`);
-  log(`     ${C.bold}/help${C.reset}    — Help`);
-  log(`     ${C.bold}/status${C.reset}  — Soul's status`);
-  log(`     ${C.bold}/memory${C.reset}  — Memory stats`);
-  log(`     ${C.bold}/model${C.reset}   — Current brain info\n`);
-
-  log(`${C.dim}Data stored in: ${SOUL_DIR}${C.reset}`);
-  log(`${C.dim}All data stays on your machine. 100% private.${C.reset}\n`);
-
-  ok("Soul is ready! Type 'soul' to start chatting.");
-}
-
-// ─── Helper: Pull Ollama Model ───
-
-async function pullOllamaModel(ram: number) {
-  let model = "qwen3:8b";
-  let modelSize = "~5 GB";
-  let modelDesc = "Good quality, fast";
-
-  if (ram >= 32) {
-    model = "qwen3:32b";
-    modelSize = "~20 GB";
-    modelDesc = "Excellent quality, for 32GB+ RAM";
-  } else if (ram >= 24) {
-    model = "qwen3:14b";
-    modelSize = "~9 GB";
-    modelDesc = "Great quality, recommended";
-  }
-
-  info(`Recommended: ${C.bold}${model}${C.reset} (${modelSize} — ${modelDesc})`);
-  log("");
-
-  const pull = await ask(`Download ${model}? May take a few minutes. (y/n)`);
-  if (pull.toLowerCase() === "y") {
-    log(`\nDownloading ${model}...`);
-    try {
-      execSync(`ollama pull ${model}`, { stdio: "inherit", timeout: 600000 });
-      ok(`Model ${model} ready!`);
-    } catch {
-      warn(`Download failed. Try later: ollama pull ${model}`);
+    if (!testPassed) {
+      warn("No brain could be tested. Configuration saved — will activate on first run.");
     }
   }
+
+  // ═══ Final: Success! ═══
+  log();
+  log(`  ${C.green}${C.bold}${BOX.tl}${line(BOX.h, 50)}${BOX.tr}${C.reset}`);
+  log(`  ${C.green}${C.bold}${BOX.v}${C.reset}  ${C.green}${C.bold}✨ Soul is ready!${C.reset}${" ".repeat(34)}${C.green}${C.bold}${BOX.v}${C.reset}`);
+  log(`  ${C.green}${C.bold}${BOX.bl}${line(BOX.h, 50)}${BOX.br}${C.reset}`);
+  log();
+
+  log(`  ${C.bold}Quick Start:${C.reset}`);
+  log();
+  log(`  ${C.cyan}soul${C.reset}                    ${C.dim}Interactive chat${C.reset}`);
+  log(`  ${C.cyan}soul "question"${C.reset}          ${C.dim}Quick question${C.reset}`);
+  log(`  ${C.cyan}soul-server${C.reset}              ${C.dim}Web UI → http://localhost:47779${C.reset}`);
+  log();
+
+  log(`  ${C.bold}Connect more later:${C.reset}`);
+  log();
+  log(`  ${C.dim}In chat, just tell Soul:${C.reset}`);
+  log(`  ${C.cyan}"ต่อ Telegram ด้วย token นี้ ..."${C.reset}     ${C.dim}Telegram bot${C.reset}`);
+  log(`  ${C.cyan}"connect discord webhook URL"${C.reset}         ${C.dim}Discord${C.reset}`);
+  log(`  ${C.cyan}"add openai key sk-..."${C.reset}               ${C.dim}Cloud AI${C.reset}`);
+  log(`  ${C.cyan}"อัพเดตตัวเอง"${C.reset}                       ${C.dim}Self-update${C.reset}`);
+  log();
+
+  log(`  ${C.bold}MCP mode${C.reset} ${C.dim}(Claude Code / Cursor / Gemini CLI):${C.reset}`);
+  log(`  ${C.dim}Add to config: ${C.cyan}{ "soul": { "command": "soul-mcp" } }${C.reset}`);
+  log();
+
+  log(`  ${C.dim}Data: ${SOUL_DIR} ${C.gray}•${C.dim} All data stays on your machine.${C.reset}`);
+  log();
 }
 
 main().catch(e => {
