@@ -290,9 +290,36 @@ export async function telegramAutoSetup(botToken: string, channelName?: string):
     source: "channels-engine",
   });
 
+  // 5. If no chatId yet, wait briefly for user to send first message
+  if (!chatId) {
+    // Poll for up to 15 seconds waiting for user's first message
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const updates = await telegramAPI(botToken, "getUpdates", { limit: 1, timeout: 5 });
+        if (updates && updates.length > 0) {
+          const msg = updates[0].message || updates[0].my_chat_member;
+          if (msg?.chat?.id) {
+            chatId = String(msg.chat.id);
+            config.chatId = chatId;
+            // Update channel config with chatId
+            ensureChannelTables();
+            const rawDb = getRawDb();
+            rawDb
+              .prepare("UPDATE soul_channels SET config = ? WHERE name = ?")
+              .run(JSON.stringify(config), name);
+            break;
+          }
+        }
+      } catch { /* continue waiting */ }
+    }
+  }
+
   if (chatId) {
     // Send welcome message
     await telegramSend(botToken, chatId, `✨ Soul connected! I'm now listening on Telegram.\n\nSend me any message and I'll respond.`);
+
+    // 6. Auto-start polling — Soul handles everything
+    startTelegramPolling(name).catch(() => { /* non-blocking */ });
   }
 
   return {
@@ -301,8 +328,8 @@ export async function telegramAutoSetup(botToken: string, channelName?: string):
     botUsername,
     channelName: name,
     message: chatId
-      ? `Bot @${botUsername} connected! ChatId: ${chatId}. Ready to send and receive.`
-      : `Bot @${botUsername} validated! Send any message to @${botUsername} on Telegram first, then use soul_telegram_listen to start receiving.`,
+      ? `Bot @${botUsername} connected and listening! ChatId: ${chatId}. Soul is now auto-replying on Telegram.`
+      : `Bot @${botUsername} validated! Send any message to @${botUsername} on Telegram, then tell Soul "ฟัง telegram" to start auto-reply.`,
     waitingForChat: !chatId,
   };
 }
@@ -457,13 +484,17 @@ async function pollTelegramLoop(
         try {
           const { runAgentLoop } = await import("./agent-loop.js");
           const result = await runAgentLoop(text, {
-            systemPrompt: `You are Soul, an AI companion responding via Telegram to ${fromName}. Keep responses concise and helpful. Use Thai if the user writes in Thai.`,
+            systemPrompt: `You are Soul, an AI companion responding via Telegram to ${fromName}. Keep responses concise and helpful. Use Thai if the user writes in Thai. NEVER output <think> tags or internal reasoning — only the final answer.`,
             maxIterations: 5,
           });
           reply = result.reply || "ขอโทษครับ ไม่สามารถประมวลผลได้";
         } catch (err: any) {
           reply = `ขอโทษครับ เกิดข้อผิดพลาด: ${err.message?.substring(0, 100) || "unknown"}`;
         }
+
+        // Strip <think>...</think> tags (Qwen3 thinking output)
+        reply = reply.replace(/<think>[\s\S]*?<\/think>\s*/g, "").trim();
+        if (!reply) reply = "ได้เลยครับ";
 
         // Send reply
         const status = await telegramSend(botToken, chatId, reply);

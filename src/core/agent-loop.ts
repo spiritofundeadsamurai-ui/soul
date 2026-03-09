@@ -237,6 +237,50 @@ export interface AgentResult {
   responseMs?: number;
 }
 
+// Strip <think>...</think> tags from LLM output (Qwen3/DeepSeek thinking)
+function stripThinkTags(text: string): string {
+  const cleaned = text.replace(/<think>[\s\S]*?<\/think>\s*/g, "").trim();
+  return cleaned || text; // fallback to original if stripping removes everything
+}
+
+// ─── Safety Confirmation for Sensitive Actions ───
+// When Soul detects an action that could be unsafe, ask for confirmation first.
+
+interface PendingAction {
+  description: string;
+  execute: () => Promise<string>;
+  createdAt: number;
+  tool: string;
+}
+
+let _pendingAction: PendingAction | null = null;
+
+function setPendingAction(action: PendingAction) {
+  _pendingAction = action;
+}
+
+function consumePendingAction(): PendingAction | null {
+  const action = _pendingAction;
+  _pendingAction = null;
+  return action;
+}
+
+// Check if user is confirming a pending action
+function isConfirmation(message: string): boolean {
+  const lower = message.toLowerCase().trim();
+  return /^(yes|y|ใช่|ตกลง|ได้|เลย|ok|confirm|ยืนยัน|ทำเลย|ได้เลย|ครับ|ค่ะ|เอา|ดำเนินการ)$/i.test(lower)
+    || /^(ใช่.*ครับ|ใช่.*ค่ะ|ได้.*เลย|ตกลง.*ครับ)$/i.test(lower);
+}
+
+function isDenial(message: string): boolean {
+  const lower = message.toLowerCase().trim();
+  return /^(no|n|ไม่|ยกเลิก|cancel|ไม่ใช่|ไม่เอา|หยุด|stop)$/i.test(lower)
+    || /^(ไม่.*ครับ|ไม่.*ค่ะ|ยกเลิก.*ครับ)$/i.test(lower);
+}
+
+// Actions that need confirmation before executing
+const UNSAFE_ACTIONS = new Set(["soul_self_update", "soul_skill_approve"]);
+
 // ─── Auto-Action: Bypass LLM for clear intent patterns ───
 // When user gives clear instructions (e.g. "connect telegram with this token"),
 // execute the action directly instead of hoping the LLM calls the tool.
@@ -247,6 +291,52 @@ async function tryAutoAction(
   options?: { onProgress?: (event: any) => void }
 ): Promise<AgentResult | null> {
   const lower = message.toLowerCase();
+
+  // ── Check for pending confirmation ──
+  if (_pendingAction) {
+    if (isConfirmation(message)) {
+      const action = consumePendingAction()!;
+      try {
+        options?.onProgress?.({ type: "tool_start", tool: action.tool, args: {} });
+        const result = await action.execute();
+        options?.onProgress?.({ type: "tool_end", tool: action.tool, result, durationMs: Date.now() - startTimeMs });
+        return {
+          reply: result,
+          toolsUsed: [action.tool],
+          iterations: 1,
+          totalTokens: 0,
+          model: "auto-action",
+          provider: "soul-auto",
+          confidence: { overall: 95, label: "very high", emoji: "🟢" },
+          responseMs: Date.now() - startTimeMs,
+        };
+      } catch (err: any) {
+        return {
+          reply: `Action failed: ${err.message}`,
+          toolsUsed: [action.tool],
+          iterations: 1,
+          totalTokens: 0,
+          model: "auto-action",
+          provider: "soul-auto",
+          responseMs: Date.now() - startTimeMs,
+        };
+      }
+    } else if (isDenial(message)) {
+      consumePendingAction();
+      return {
+        reply: "ยกเลิกแล้วครับ",
+        toolsUsed: [],
+        iterations: 0,
+        totalTokens: 0,
+        model: "auto-action",
+        provider: "soul-auto",
+        responseMs: Date.now() - startTimeMs,
+      };
+    } else {
+      // User sent something else — clear pending and process normally
+      consumePendingAction();
+    }
+  }
 
   // ── Pattern: Version query ──
   if (/version|เวอร์ชัน|เวอชัน|เวอร์ชั่น/i.test(lower) && /soul|ตัวเอง|คุณ/i.test(lower)) {
@@ -269,8 +359,9 @@ async function tryAutoAction(
     {
       match: () => {
         const hasTelegramToken = /\d{8,}:[A-Za-z0-9_-]{30,}/.test(message);
+        // Telegram token format is unique — if present with ANY action keyword, it's Telegram
         const hasTelegramKeyword = /telegram|tg|เทเล/i.test(lower);
-        const hasConnectKeyword = /connect|ต่อ|เชื่อม|setup|ตั้งค่า|ติดตั้ง|ใช้|link/i.test(lower);
+        const hasConnectKeyword = /connect|ต่อ|เชื่อม|setup|ตั้งค่า|ติดตั้ง|ใช้|link|ให้|token|โทเคน/i.test(lower);
         return hasTelegramToken && (hasTelegramKeyword || hasConnectKeyword);
       },
       execute: async () => {
@@ -339,11 +430,18 @@ async function tryAutoAction(
     {
       match: () => /อัพเดต|update|upgrade/i.test(lower) && /soul|ตัวเอง|self/i.test(lower),
       execute: async () => {
-        options?.onProgress?.({ type: "tool_start", tool: "soul_self_update", args: {} });
-        const { selfUpdate } = await import("./channels.js");
-        const result = await selfUpdate();
-        options?.onProgress?.({ type: "tool_end", tool: "soul_self_update", result: result.message, durationMs: Date.now() - startTimeMs });
-        return result.message;
+        // Safety: ask confirmation before self-update
+        setPendingAction({
+          description: "อัพเดต Soul เป็นเวอร์ชันล่าสุด",
+          tool: "soul_self_update",
+          createdAt: Date.now(),
+          execute: async () => {
+            const { selfUpdate } = await import("./channels.js");
+            const result = await selfUpdate();
+            return result.message;
+          },
+        });
+        return `⚠️ ต้องการอัพเดต Soul เป็นเวอร์ชันล่าสุดใช่มั้ยครับ?\nพิมพ์ "ใช่" เพื่อยืนยัน หรือ "ไม่" เพื่อยกเลิก`;
       },
     },
     // Telegram listen: "ฟัง telegram", "listen telegram"
@@ -864,7 +962,7 @@ export async function runAgentLoop(
       }
 
       return {
-        reply,
+        reply: stripThinkTags(reply),
         toolsUsed,
         iterations: i + 1,
         totalTokens,
@@ -905,6 +1003,15 @@ export async function runAgentLoop(
             messages.push({ role: "tool", content: result, tool_call_id: tc.id });
             continue;
           }
+
+          // Safety gate: unsafe tools need master confirmation
+          if (UNSAFE_ACTIONS.has(toolName)) {
+            result = `⚠️ Action "${toolName}" requires master confirmation. Ask the master to confirm before proceeding.`;
+            options?.onProgress?.({ type: "tool_error", tool: toolName, error: "unsafe_action — needs confirmation" });
+            messages.push({ role: "tool", content: result, tool_call_id: tc.id });
+            continue;
+          }
+
           options?.onProgress?.({ type: "tool_start", tool: toolName, args });
           result = await tool.execute(args);
           options?.onProgress?.({ type: "tool_end", tool: toolName, result: result.substring(0, 200), durationMs: Date.now() - toolStart });
@@ -933,7 +1040,7 @@ export async function runAgentLoop(
   // Max iterations reached — return whatever we have
   const lastAssistant = messages.filter(m => m.role === "assistant").pop();
   return {
-    reply: lastAssistant?.content || "(Soul reached maximum thinking iterations)",
+    reply: stripThinkTags(lastAssistant?.content || "(Soul reached maximum thinking iterations)"),
     toolsUsed,
     iterations: maxIterations,
     totalTokens,
