@@ -58,7 +58,7 @@ async function main() {
   // Create MCP server
   const server = new McpServer({
     name: "soul",
-    version: "1.9.3",
+    version: "1.9.4",
   });
 
   // Register all tools
@@ -109,6 +109,17 @@ async function main() {
   registerVideoCreatorTools(server);
   registerWsNotificationTools(server);
   registerMasterProfileTools(server);
+
+  // Auto-start Telegram polling if previously connected
+  try {
+    const { listChannels, startTelegramPolling } = await import("./core/channels.js");
+    const channels = await listChannels();
+    const tgChannel = channels.find((c: any) => c.channelType === "telegram" && c.isActive);
+    if (tgChannel) {
+      const result = await startTelegramPolling(tgChannel.name);
+      if (result.success) console.error(`[Soul] Telegram auto-connected: ${tgChannel.name}`);
+    }
+  } catch { /* ok — no channels yet */ }
 
   // Log startup
   if (needsSetup) {

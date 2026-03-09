@@ -263,6 +263,19 @@ async function main() {
   // Auto-import pending provider from setup-cli
   importPendingConfig();
 
+  // Auto-start Telegram polling if previously connected
+  try {
+    const { listChannels, startTelegramPolling } = await import("./core/channels.js");
+    const channels = await listChannels();
+    const tgChannel = channels.find((c: any) => c.channelType === "telegram" && c.isActive);
+    if (tgChannel) {
+      const result = await startTelegramPolling(tgChannel.name);
+      if (result.success) {
+        console.log(`${C.green}Telegram auto-connected: ${tgChannel.name}${C.reset}`);
+      }
+    }
+  } catch { /* ok — no channels yet */ }
+
   // Check LLM availability
   const defaultLLM = getDefaultConfig();
   const providers = listConfiguredProviders();
