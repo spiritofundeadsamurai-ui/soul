@@ -57,6 +57,7 @@ import { registerSessionTools } from "./tools/sessions.js";
 import { registerPlannerTools } from "./tools/agent-planner.js";
 import { registerAutoToolTools } from "./tools/auto-tool.js";
 import { registerParallelTools } from "./tools/parallel-agent.js";
+import { registerDualBrainTools } from "./tools/dual-brain.js";
 
 async function main() {
   // Initialize Soul
@@ -65,7 +66,7 @@ async function main() {
   // Create MCP server
   const server = new McpServer({
     name: "soul",
-    version: "1.10.0",
+    version: "1.10.1",
   });
 
   // ─── MINIMAL TOOL SURFACE ───
@@ -127,6 +128,7 @@ async function main() {
   registerPlannerTools(collector as any);
   registerAutoToolTools(collector as any);
   registerParallelTools(collector as any);
+  registerDualBrainTools(collector as any);
 
   // Register soul_agent meta-tool — gateway to ALL 300+ tools
   registerSoulAgent(server);

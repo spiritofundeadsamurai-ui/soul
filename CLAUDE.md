@@ -26,7 +26,9 @@ soul/
 ├── src/
 │   ├── index.ts              # MCP server entry (15 core + soul_agent router)
 │   ├── server.ts             # HTTP API + Web UI + LLM proxy + Slack/Discord webhooks
-│   ├── core/                 # 38 engine modules
+│   ├── core/                 # 40 engine modules
+│   │   ├── dual-brain.ts     # Dual-brain orchestrator: System 1 ↔ System 2 (v1.10.1)
+│   │   ├── reflex-engine.ts  # System 1 fast reflexes: pattern/emotion/habit/tool/safety (v1.10.1)
 │   │   ├── soul-engine.ts    # Central engine + identity
 │   │   ├── master.ts         # Master binding (bcrypt)
 │   │   ├── philosophy.ts     # 5 core principles
@@ -77,7 +79,8 @@ soul/
 │   │   ├── memory-engine.ts  # Memory CRUD + hybrid search
 │   │   ├── learning.ts       # Pattern extraction + confidence
 │   │   └── tfidf.ts          # Pure TS TF-IDF cosine similarity
-│   ├── tools/                # 52 tool modules + tool-router.ts (minimal surface proxy)
+│   ├── tools/                # 53 tool modules + tool-router.ts (minimal surface proxy)
+│   │   ├── dual-brain.ts     # Brain dashboard + reflex teach tools (v1.10.1)
 │   │   ├── tool-router.ts    # Collector proxy: 15 core → MCP, 300+ → soul_agent
 │   │   ├── sessions.ts       # Session + branch MCP tools (v1.10)
 │   │   ├── agent-planner.ts  # Planner MCP tools (v1.10)
@@ -147,6 +150,7 @@ soul/
 | **Agent Planner** | 3 | soul_plan_create, soul_plan_status, soul_plan_list |
 | **Auto-Tool** | 3 | soul_auto_suggest, soul_auto_approve, soul_auto_list |
 | **Parallel Agent** | 2 | soul_parallel_run, soul_parallel_status |
+| **Dual Brain** | 2 | soul_brain_dashboard, soul_reflex_teach |
 
 ## Conventions
 - Use `snake_case` for database columns, `camelCase` for TypeScript
@@ -180,6 +184,7 @@ soul/
 - Suspicious TLD, typosquat, and homograph attack detection
 
 ## Key Design Decisions
+- **Dual-Brain Architecture** (v1.10.1): Inspired by Macrohard/Digital Optimus (System 1 + System 2). System 1 (Reflex Engine) handles instant responses < 100ms without LLM — 5 reflex types: safety, pattern, emotional, habit, tool. System 2 (Conductor) uses full LLM agent loop. Learning loop: System 2 trains System 1, so over time more queries handled by fast reflexes
 - **Minimal Tool Surface** (v1.10.0): 15 core MCP tools + soul_agent meta-tool. Context reduced 94% (~33k→~2k tokens). Inspired by Pi Coding Agent's "4 tools" philosophy adapted for life companion use case
 - **Self-Healing**: Auto-retry on failure, record mistakes automatically, suggest fixes from past errors, adaptive core tools based on usage patterns, auto-tool creation from repeated patterns
 - **Conversation Branching** (v1.10): Tree-based conversations — messages form a tree via parent_id, branch/switch/visualize. Inspired by Pi's tree-based UI

@@ -752,44 +752,71 @@ export type ProgressEvent =
   | { type: "cache_hit" }
   | { type: "knowledge_hit"; source: string };
 
+export type AgentLoopOptions = {
+  providerId?: string;
+  modelId?: string;
+  maxIterations?: number;
+  temperature?: number;
+  systemPrompt?: string;
+  history?: LLMMessage[];
+  skipCache?: boolean;
+  onProgress?: (event: ProgressEvent) => void;
+  childName?: string;
+};
+
+/**
+ * Main entry point — routes through Dual-Brain Architecture
+ * System 1 (Reflex Engine) → System 2 (Full Agent Loop)
+ */
 export async function runAgentLoop(
   userMessage: string,
-  options?: {
-    providerId?: string;
-    modelId?: string;
-    maxIterations?: number;
-    temperature?: number;
-    systemPrompt?: string;
-    history?: LLMMessage[];
-    skipCache?: boolean;
-    onProgress?: (event: ProgressEvent) => void;
-    childName?: string; // Talk to a specific Soul Child instead of Core
-  }
+  options?: AgentLoopOptions,
 ): Promise<AgentResult> {
 
-  const startTimeMs = Date.now();
-
-  // UPGRADE #3: Update master profile from this message (async, non-blocking)
+  // Pre-processing: profile, personality, predictions (always run)
   try {
     const { updateProfileFromMessage } = await import("./master-profile.js");
     updateProfileFromMessage(userMessage, true);
-  } catch { /* ok — first run may not have table yet */ }
+  } catch { /* ok */ }
 
-  // UPGRADE #9: Personality drift — learn from master's style
   try {
     const { learnFromMasterMessage } = await import("./personality-drift.js");
     learnFromMasterMessage(userMessage);
   } catch { /* ok */ }
 
-  // UPGRADE #20: Predictive context — record interaction for predictions
   try {
     const { recordInteraction } = await import("./predictive-context.js");
     const previousTopic = options?.history?.slice(-2).find(m => m.role === "user")?.content?.substring(0, 50);
     recordInteraction(userMessage, new Date().getHours(), previousTopic || undefined);
   } catch { /* ok */ }
 
+  // ── DUAL-BRAIN ORCHESTRATOR ──
+  // Routes to System 1 (reflex, < 100ms) first, then escalates to System 2 (LLM) if needed
+  try {
+    const { processDualBrain } = await import("./dual-brain.js");
+    const isLeanMode = !options?.providerId || options.providerId === "ollama" || process.env.SOUL_LEAN === "1";
+    return await processDualBrain(userMessage, {
+      ...options,
+      isLeanMode,
+    });
+  } catch {
+    // Fallback: if dual-brain module fails, run System 2 directly
+    return runSystem2Loop(userMessage, options);
+  }
+}
+
+/**
+ * System 2 Loop — Full agent loop with LLM, tools, thinking chain
+ * Called by dual-brain.ts when System 1 can't handle the request
+ */
+export async function runSystem2Loop(
+  userMessage: string,
+  options?: AgentLoopOptions,
+): Promise<AgentResult> {
+
+  const startTimeMs = Date.now();
+
   // ── Layer 0: Auto-Action — Detect clear intent and execute tools directly ──
-  // When LLMs (especially local ones) fail to call tools, this catches obvious patterns
   const autoAction = await tryAutoAction(userMessage, startTimeMs, options);
   if (autoAction) return autoAction;
 
