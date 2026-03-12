@@ -488,6 +488,165 @@ export function getReflexStats(): {
   return { total, active, byType, avgConfidence: Math.round(avgConf * 100) / 100, topReflexes };
 }
 
+// ─── Seed Default Reflexes ───
+
+/**
+ * Seeds common reflexes that Soul should know immediately.
+ * Called once on first use (when reflexes table is empty).
+ * Returns the number of reflexes seeded.
+ */
+export function seedDefaultReflexes(): number {
+  ensureReflexTable();
+  const db = getRawDb();
+
+  // Check if already seeded
+  const count = (db.prepare(`SELECT COUNT(*) as c FROM soul_reflexes`).get() as any).c;
+  if (count > 0) return 0;
+
+  const seeds: Array<{
+    type: Reflex["reflexType"];
+    pattern: string;
+    keywords: string[];
+    response: string;
+    confidence: number;
+  }> = [
+    // ── Pattern reflexes: greetings ──
+    {
+      type: "pattern",
+      pattern: "สวัสดี",
+      keywords: ["สวัสดี"],
+      response: "สวัสดีครับ! 😊 มีอะไรให้ช่วยไหมครับ?",
+      confidence: 0.90,
+    },
+    {
+      type: "pattern",
+      pattern: "hello",
+      keywords: ["hello"],
+      response: "Hello! 😊 How can I help you today?",
+      confidence: 0.90,
+    },
+    {
+      type: "pattern",
+      pattern: "hi",
+      keywords: ["hi"],
+      response: "Hi there! What can I do for you?",
+      confidence: 0.88,
+    },
+    // ── Pattern reflexes: gratitude ──
+    {
+      type: "pattern",
+      pattern: "ขอบคุณ",
+      keywords: ["ขอบคุณ"],
+      response: "ยินดีเสมอครับ! 🙏 มีอะไรอีกไหมครับ?",
+      confidence: 0.90,
+    },
+    {
+      type: "pattern",
+      pattern: "thanks",
+      keywords: ["thanks"],
+      response: "You're welcome! 🙏 Anything else I can help with?",
+      confidence: 0.90,
+    },
+    {
+      type: "pattern",
+      pattern: "thank you",
+      keywords: ["thank", "you"],
+      response: "You're welcome! Happy to help. 😊",
+      confidence: 0.90,
+    },
+    // ── Pattern reflexes: farewell ──
+    {
+      type: "pattern",
+      pattern: "ลาก่อน",
+      keywords: ["ลาก่อน"],
+      response: "ลาก่อนครับ! 👋 ดูแลตัวเองด้วยนะครับ",
+      confidence: 0.90,
+    },
+    {
+      type: "pattern",
+      pattern: "bye",
+      keywords: ["bye"],
+      response: "Goodbye! Take care! 👋",
+      confidence: 0.88,
+    },
+    {
+      type: "pattern",
+      pattern: "goodbye",
+      keywords: ["goodbye"],
+      response: "Goodbye! See you next time! 👋",
+      confidence: 0.90,
+    },
+    // ── Pattern reflexes: status check ──
+    {
+      type: "pattern",
+      pattern: "สบายดีไหม",
+      keywords: ["สบายดี", "ไหม"],
+      response: "สบายดีครับ! 😊 ขอบคุณที่ถามนะครับ คุณล่ะครับ สบายดีไหม?",
+      confidence: 0.88,
+    },
+    {
+      type: "pattern",
+      pattern: "how are you",
+      keywords: ["how", "are", "you"],
+      response: "I'm doing great, thanks for asking! 😊 How about you?",
+      confidence: 0.88,
+    },
+    // ── Pattern reflexes: capabilities ──
+    {
+      type: "pattern",
+      pattern: "ช่วยอะไรได้บ้าง",
+      keywords: ["ช่วย", "อะไร", "ได้", "บ้าง"],
+      response: "ผมช่วยได้หลายอย่างครับ! 🧠 จำข้อมูล, ค้นหาความรู้, ตั้งเป้าหมาย, จัดการงาน, วิเคราะห์, เขียน, สร้างแผนภูมิ, ค้นเว็บ และอีกมากมาย! บอกได้เลยครับว่าต้องการอะไร",
+      confidence: 0.88,
+    },
+    {
+      type: "pattern",
+      pattern: "what can you do",
+      keywords: ["what", "can", "you", "do"],
+      response: "I can do a lot! 🧠 Remember things, search knowledge, set goals, manage tasks, analyze, write, create charts, search the web, and much more! Just tell me what you need.",
+      confidence: 0.88,
+    },
+    // ── Safety reflexes (tracked in DB for metrics) ──
+    {
+      type: "safety",
+      pattern: "SQL injection",
+      keywords: ["drop", "table", "delete", "from", "soul_"],
+      response: "⚠️ Blocked: potentially dangerous SQL pattern detected.",
+      confidence: 0.99,
+    },
+    {
+      type: "safety",
+      pattern: "Shell injection",
+      keywords: ["rm", "-rf", "format", "eval", "exec", "child_process"],
+      response: "⚠️ Blocked: potentially dangerous shell pattern detected.",
+      confidence: 0.99,
+    },
+  ];
+
+  let seeded = 0;
+  const insert = db.prepare(`
+    INSERT INTO soul_reflexes (reflex_type, trigger_hash, trigger_pattern, trigger_keywords, response_template, confidence, quality_score, promoted_from)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  for (const seed of seeds) {
+    const hash = hashTrigger(seed.pattern);
+    insert.run(
+      seed.type,
+      hash,
+      seed.pattern,
+      JSON.stringify(seed.keywords),
+      seed.response,
+      seed.confidence,
+      seed.confidence, // quality_score = confidence for seeds
+      "seed",
+    );
+    seeded++;
+  }
+
+  return seeded;
+}
+
 // ─── Helpers ───
 
 function rowToReflex(row: any): Reflex {

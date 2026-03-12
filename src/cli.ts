@@ -457,6 +457,19 @@ async function main() {
 
   saveSessionId(sessionId);
 
+  // Ensure a named session exists for conversation tree tracking
+  try {
+    const { getSession } = await import("./core/sessions.js");
+    const { getRawDb } = await import("./db/index.js");
+    if (!getSession(sessionId)) {
+      // Insert directly with matching id so conversation tree references align
+      const rawDb = getRawDb();
+      rawDb.prepare(
+        "INSERT OR IGNORE INTO soul_sessions (id, name, description) VALUES (?, ?, ?)"
+      ).run(sessionId, `cli-${sessionId.split("-")[0]}`, "CLI session");
+    }
+  } catch { /* sessions table may not be available yet */ }
+
   // Status line
   const sessionShort = sessionId.split("-")[0];
   console.log(`${C.dim}${horizontalLine()}${C.reset}`);
@@ -714,6 +727,7 @@ async function handleMessage(input: string, sessionId: string) {
       history,
       maxIterations: 10,
       childName: activeChildName || undefined,
+      sessionId,
       onProgress: (event) => {
         // Check if aborted
         if (abortController?.signal.aborted) return;

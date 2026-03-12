@@ -25,8 +25,11 @@
  */
 
 import { getRawDb } from "../db/index.js";
-import { tryReflex, promoteToReflex, reportReflexMiss } from "./reflex-engine.js";
+import { tryReflex, promoteToReflex, reportReflexMiss, seedDefaultReflexes } from "./reflex-engine.js";
 import type { AgentResult } from "./agent-loop.js";
+
+// ─── One-time reflex seeding ───
+let _reflexesSeeded = false;
 
 // ─── Lazy table creation ───
 let tableReady = false;
@@ -67,6 +70,7 @@ export interface DualBrainOptions {
   skipCache?: boolean;
   onProgress?: (event: any) => void;
   childName?: string;
+  sessionId?: string;
 }
 
 export interface DualBrainResult extends AgentResult {
@@ -101,6 +105,14 @@ export async function processDualBrain(
   const threshold = options?.confidenceThreshold ?? (options?.isLeanMode ? 0.75 : 0.85);
   let emotionalPrefix: string | undefined;
   let system1LatencyMs: number | undefined;
+
+  // Seed default reflexes on first use (once per process)
+  if (!_reflexesSeeded) {
+    try {
+      seedDefaultReflexes();
+    } catch { /* seeding failure is non-critical */ }
+    _reflexesSeeded = true;
+  }
 
   // ── Phase 1: System 1 Attempt (< 100ms) ──
   if (!options?.skipSystem1) {

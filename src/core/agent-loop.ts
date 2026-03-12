@@ -762,6 +762,7 @@ export type AgentLoopOptions = {
   skipCache?: boolean;
   onProgress?: (event: ProgressEvent) => void;
   childName?: string;
+  sessionId?: string;
 };
 
 /**
@@ -1249,6 +1250,21 @@ export async function runSystem2Loop(
           }
         } catch { /* ok */ }
       }
+
+      // Save to conversation tree if session is active
+      try {
+        const { addTreeMessage, getActiveBranch } = await import("./conversation-tree.js");
+        const { updateSessionLastMessage } = await import("./sessions.js");
+        const sid = options?.sessionId || "default";
+        const activeBranch = getActiveBranch(sid);
+        const parentId = activeBranch?.activeMessageId || null;
+        // Save user message
+        const userMsg = addTreeMessage(sid, parentId, "user", userMessage);
+        // Save assistant reply
+        const assistantMsg = addTreeMessage(sid, userMsg.id, "assistant", stripThinkTags(reply));
+        // Update session pointer
+        updateSessionLastMessage(sid, assistantMsg.id);
+      } catch { /* conversation tree persistence is non-critical */ }
 
       return {
         reply: stripThinkTags(reply),
