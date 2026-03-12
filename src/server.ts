@@ -5,7 +5,7 @@ import { serve } from "@hono/node-server";
 import { cors } from "hono/cors";
 import { soul } from "./core/soul-engine.js";
 import { getPhilosophy } from "./core/philosophy.js";
-import { verifyMaster, getMasterInfo, getMasterPassphraseHash } from "./core/master.js";
+import { verifyMaster, getMasterInfo, getMasterPassphraseHash, isMasterSetup } from "./core/master.js";
 import {
   remember,
   search,
@@ -32,7 +32,7 @@ import { getGrowthSummary } from "./core/meta-intelligence.js";
 import { listAutoGoals, getGoalsDashboard } from "./core/goal-autopilot.js";
 import { listWorkflows, getWorkflowRuns } from "./core/workflow-engine.js";
 import { listResearchProjects } from "./core/deep-research.js";
-import { getDefaultConfig, listConfiguredProviders, getUsageStats, type LLMMessage } from "./core/llm-connector.js";
+import { getDefaultConfig, listConfiguredProviders, getUsageStats, chat, chatStream, type LLMMessage } from "./core/llm-connector.js";
 import { runAgentLoop, registerAllInternalTools, saveConversationTurn, getConversationHistory, listSessions, getRegisteredTools } from "./core/agent-loop.js";
 import { createAuthToken, validateAuthToken, checkRateLimit, logSecurityEvent } from "./core/security.js";
 import { startScheduler } from "./core/scheduler.js";
@@ -75,6 +75,21 @@ app.use("*", cors({
   },
   credentials: true,
 }));
+
+// Master setup gate — block write endpoints (POST/PUT/DELETE) until master is bound
+app.use("/api/*", async (c, next) => {
+  const method = c.req.method;
+  if (method === "POST" || method === "PUT" || method === "DELETE") {
+    const masterReady = await isMasterSetup();
+    if (!masterReady) {
+      return c.json(
+        { error: "Soul setup required. Use soul_setup to bind a master first." },
+        403
+      );
+    }
+  }
+  await next();
+});
 
 // Auth middleware — supports expiring tokens + legacy static tokens
 function authMiddleware() {
@@ -789,6 +804,211 @@ app.get("/api/llm/status", authMiddleware(), async (c) => {
       totalCost: usage.totalCostUsd,
     },
   });
+});
+
+// === OpenAI-Compatible LLM Proxy ===
+// Makes Soul a local LLM gateway at /v1/chat/completions
+// Other tools can point OPENAI_BASE_URL here to route through Soul's configured LLM
+
+app.get("/v1/models", async (c) => {
+  const providers = listConfiguredProviders();
+  const models = providers.map((p) => ({
+    id: `${p.providerId}/${p.modelId}`,
+    object: "model" as const,
+    created: Math.floor(Date.now() / 1000),
+    owned_by: p.providerId,
+    permission: [],
+    root: p.modelId,
+    parent: null,
+  }));
+  // Always include a generic "soul-proxy" model that routes to default
+  models.unshift({
+    id: "soul-proxy",
+    object: "model" as const,
+    created: Math.floor(Date.now() / 1000),
+    owned_by: "soul",
+    permission: [],
+    root: "soul-proxy",
+    parent: null,
+  });
+  return c.json({ object: "list", data: models });
+});
+
+app.post("/v1/chat/completions", async (c) => {
+  try {
+    const body = await c.req.json();
+    const { model, messages, temperature, max_tokens, stream } = body;
+
+    if (!messages || !Array.isArray(messages) || messages.length === 0) {
+      return c.json({ error: { message: "messages is required and must be a non-empty array", type: "invalid_request_error" } }, 400);
+    }
+
+    // Map OpenAI messages to Soul LLMMessage format
+    const llmMessages: LLMMessage[] = messages.map((m: any) => ({
+      role: m.role || "user",
+      content: typeof m.content === "string" ? m.content : JSON.stringify(m.content),
+      name: m.name,
+    }));
+
+    // Parse provider/model from model field: "providerId/modelId" or just use default
+    let providerId: string | undefined;
+    let modelId: string | undefined;
+    if (model && model !== "soul-proxy" && model.includes("/")) {
+      const parts = model.split("/");
+      providerId = parts[0];
+      modelId = parts.slice(1).join("/");
+    }
+
+    const chatOptions = {
+      providerId,
+      modelId,
+      temperature: typeof temperature === "number" ? temperature : undefined,
+      maxTokens: typeof max_tokens === "number" ? max_tokens : undefined,
+    };
+
+    if (stream) {
+      // SSE streaming response
+      const readable = new ReadableStream({
+        async start(controller) {
+          const encoder = new TextEncoder();
+          const completionId = `chatcmpl-${Date.now().toString(36)}`;
+          let usedModel = "soul-proxy";
+
+          try {
+            const response = await chatStream(llmMessages, {
+              ...chatOptions,
+              onToken: (token: string) => {
+                usedModel = "soul-proxy";
+                const chunk = {
+                  id: completionId,
+                  object: "chat.completion.chunk",
+                  created: Math.floor(Date.now() / 1000),
+                  model: usedModel,
+                  choices: [{ index: 0, delta: { content: token }, finish_reason: null }],
+                };
+                controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+              },
+            });
+
+            usedModel = response.model || "soul-proxy";
+
+            // If no streaming happened (onToken never called), send content as one chunk
+            if (response.content) {
+              const chunk = {
+                id: completionId,
+                object: "chat.completion.chunk",
+                created: Math.floor(Date.now() / 1000),
+                model: usedModel,
+                choices: [{ index: 0, delta: { content: response.content }, finish_reason: null }],
+              };
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+            }
+
+            // Send final chunk with finish_reason
+            const finalChunk = {
+              id: completionId,
+              object: "chat.completion.chunk",
+              created: Math.floor(Date.now() / 1000),
+              model: usedModel,
+              choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+            };
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(finalChunk)}\n\n`));
+            controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+          } catch (err: any) {
+            const errorChunk = { error: { message: err.message || "LLM proxy error", type: "server_error" } };
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(errorChunk)}\n\n`));
+            controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+          }
+          controller.close();
+        },
+      });
+
+      return new Response(readable, {
+        headers: {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          "Connection": "keep-alive",
+        },
+      });
+    }
+
+    // Non-streaming response
+    const response = await chat(llmMessages, chatOptions);
+
+    return c.json({
+      id: `chatcmpl-${Date.now().toString(36)}`,
+      object: "chat.completion",
+      created: Math.floor(Date.now() / 1000),
+      model: response.model || "soul-proxy",
+      choices: [{
+        index: 0,
+        message: {
+          role: "assistant",
+          content: response.content || "",
+        },
+        finish_reason: response.finishReason || "stop",
+      }],
+      usage: {
+        prompt_tokens: response.usage?.inputTokens || 0,
+        completion_tokens: response.usage?.outputTokens || 0,
+        total_tokens: response.usage?.totalTokens || 0,
+      },
+    });
+  } catch (err: any) {
+    console.error("[Soul] LLM proxy error:", err.message);
+    return c.json({
+      error: {
+        message: err.message || "Internal server error",
+        type: "server_error",
+        code: "internal_error",
+      },
+    }, 500);
+  }
+});
+
+// === Slack & Discord Webhook Endpoints ===
+
+// Slack Events API — receives inbound messages from Slack
+app.post("/api/slack/events", async (c) => {
+  try {
+    const payload = await c.req.json();
+    const { handleSlackEvent } = await import("./core/channels.js");
+    const result = await handleSlackEvent(payload);
+    return c.json(result.body, result.statusCode as any);
+  } catch (err: any) {
+    console.error("[Slack] Webhook error:", err.message);
+    return c.json({ error: "Internal error" }, 500);
+  }
+});
+
+// Discord Interactions — receives slash commands and interactions from Discord
+app.post("/api/discord/interactions", async (c) => {
+  try {
+    const payload = await c.req.json();
+    const { handleDiscordInteraction } = await import("./core/channels.js");
+    const result = await handleDiscordInteraction(payload);
+    return c.json(result.body, result.statusCode as any);
+  } catch (err: any) {
+    console.error("[Discord] Interaction error:", err.message);
+    return c.json({ error: "Internal error" }, 500);
+  }
+});
+
+// Discord Message — simpler alternative: POST a message payload, get a reply
+app.post("/api/discord/message", async (c) => {
+  try {
+    const payload = await c.req.json();
+    const { content, author, channelId } = payload;
+    if (!content || !channelId) {
+      return c.json({ error: "content and channelId are required" }, 400);
+    }
+    const { handleDiscordMessage } = await import("./core/channels.js");
+    const result = await handleDiscordMessage({ content, author: author || "User", channelId });
+    return c.json(result);
+  } catch (err: any) {
+    console.error("[Discord] Message error:", err.message);
+    return c.json({ error: "Internal error" }, 500);
+  }
 });
 
 // === Start ===

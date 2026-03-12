@@ -407,7 +407,7 @@
 
       <div id="terminal-input-area">
         <span class="prompt-symbol">soul &gt;</span>
-        <input id="terminal-input" type="text" placeholder="Type a command or question..." autocomplete="off">
+        <input id="terminal-input" type="text" placeholder="Ask Soul anything or type /help for commands..." autocomplete="off">
       </div>
     </div>
 
@@ -569,10 +569,16 @@
 
         case '/health':
           log('soul-core', 'Running health check...', 'thinking');
-          log('soul-core', '[OK] Database: accessible', 'success');
-          log('soul-core', '[OK] Memory engine: operational', 'success');
-          log('soul-core', '[OK] API server: responding', 'success');
-          addActivity('Health', 'All systems operational');
+          try {
+            const hc = await fetch(API + '/health').then(r => r.json());
+            log('soul-core', `[${hc.status === 'ok' ? 'OK' : 'WARN'}] Status: ${hc.status}`, hc.status === 'ok' ? 'success' : 'error');
+            log('soul-core', `[OK] Database: accessible`, 'success');
+            log('soul-core', `[OK] API server: responding`, 'success');
+            addActivity('Health', `Status: ${hc.status}`);
+          } catch {
+            log('soul-core', '[FAIL] API server: not responding', 'error');
+            addActivity('Health', 'API check failed');
+          }
           break;
 
         case '/wisdom':
@@ -590,7 +596,7 @@
           log('system', '  /team        — Coworker team overview', 'system');
           log('system', '  /search <q>  — Search memories', 'system');
           log('system', '  /clear       — Clear terminal', 'system');
-          log('system', '  <any text>   — Search memories', 'system');
+          log('system', '  <any text>   — Chat with Soul AI', 'system');
           break;
 
         case '/clear':
@@ -633,7 +639,36 @@
           break;
 
         default:
-          log('system', `Unknown command: ${command}. Type /help`, 'system');
+          // Route free-text to Soul's AI chat (not just memory search)
+          if (!cmd.startsWith('/')) {
+            log('you', cmd, '');
+            log('soul-core', 'Thinking...', 'thinking');
+            try {
+              const chatToken = sessionStorage.getItem('soul_token') || '';
+              const headers = { 'Content-Type': 'application/json' };
+              if (chatToken) headers['Authorization'] = 'Bearer ' + chatToken;
+              const chatRes = await fetch(API + '/chat', {
+                method: 'POST', headers,
+                body: JSON.stringify({ message: cmd })
+              });
+              const chatData = await chatRes.json();
+              // Remove "Thinking..." line
+              terminal.lastElementChild?.remove();
+              if (chatData.reply) {
+                log('soul-core', chatData.reply, 'success');
+                addActivity('Chat', cmd.substring(0, 40));
+              } else if (chatData.error) {
+                log('system', chatData.error, 'error');
+              } else {
+                log('system', 'No response from Soul', 'error');
+              }
+            } catch (e) {
+              terminal.lastElementChild?.remove();
+              log('system', 'Chat failed — is Soul running? Try /status', 'error');
+            }
+          } else {
+            log('system', `Unknown command: ${command}. Type /help for available commands.`, 'system');
+          }
       }
     }
 

@@ -19,6 +19,7 @@ import { randomUUID } from "crypto";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { createRequire } from "module";
 import { soul } from "./core/soul-engine.js";
 import {
   runAgentLoop,
@@ -96,6 +97,7 @@ const COMMANDS = [
   { cmd: "/memory",   desc: "Memory statistics",               alias: ["/mem"] },
   { cmd: "/model",    desc: "Current LLM info",                alias: [] },
   { cmd: "/clear",    desc: "Clear screen",                    alias: ["/cls"] },
+  { cmd: "/discover", desc: "Explore Soul's 300+ capabilities", alias: ["/tools", "/capabilities"] },
   { cmd: "/help",     desc: "Show all commands",               alias: ["/h", "/?"] },
   { cmd: "/energy",   desc: "Soul's energy/cost report",       alias: [] },
   { cmd: "/dreams",   desc: "Show Soul's dreams & insights",   alias: [] },
@@ -212,6 +214,135 @@ function exitMultilineMode(rl: readline.Interface): string | null {
 
 // ─── Command Suggestions ───
 
+function showDiscoverMenu() {
+  console.log(`\n${C.bold}${C.magenta}Soul Capabilities${C.reset} ${C.dim}(300+ tools — just type naturally!)${C.reset}\n`);
+
+  const categories = [
+    {
+      name: "Memory & Search",
+      icon: BOX.dot,
+      color: C.cyan,
+      examples: [
+        [`"remember X"`, "stores to long-term memory"],
+        [`"search for X"`, "searches across all data"],
+        [`"recall context"`, "retrieves past conversation context"],
+        [`"what do you know about X"`, "searches knowledge base"],
+      ],
+    },
+    {
+      name: "Thinking & Planning",
+      icon: BOX.dot,
+      color: C.yellow,
+      examples: [
+        [`"brainstorm about X"`, "generates ideas"],
+        [`"think about X with SWOT"`, "structured analysis (9 frameworks)"],
+        [`"decompose X"`, "breaks problems into steps"],
+        [`"decide between A and B"`, "weighted decision analysis"],
+      ],
+    },
+    {
+      name: "Life & Goals",
+      icon: BOX.dot,
+      color: C.green,
+      examples: [
+        [`"set goal X"`, "creates a trackable goal"],
+        [`"track habit X"`, "starts habit tracking"],
+        [`"reflect on today"`, "daily reflection journal"],
+        [`"motivate me"`, "personalized encouragement"],
+      ],
+    },
+    {
+      name: "Creative & Writing",
+      icon: BOX.dot,
+      color: C.magenta,
+      examples: [
+        [`"create a chart of X"`, "generates visualization"],
+        [`"write about X"`, "creative writing"],
+        [`"create diagram of X"`, "Mermaid diagrams"],
+        [`"create presentation on X"`, "slide deck generation"],
+      ],
+    },
+    {
+      name: "Research & Learning",
+      icon: BOX.dot,
+      color: C.blue,
+      examples: [
+        [`"research X"`, "deep multi-source research"],
+        [`"learn from <URL>"`, "extract knowledge from web"],
+        [`"learn from YouTube <URL>"`, "summarize video content"],
+        [`"create learning path for X"`, "structured curriculum"],
+      ],
+    },
+    {
+      name: "Code & Dev",
+      icon: BOX.dot,
+      color: C.cyan,
+      examples: [
+        [`"save snippet X"`, "stores reusable code"],
+        [`"recommend stack for X"`, "tech stack advice"],
+        [`"analyze project"`, "codebase analysis"],
+        [`"search files for X"`, "file content search"],
+      ],
+    },
+    {
+      name: "Chat & AI Brain",
+      icon: BOX.dot,
+      color: C.yellow,
+      examples: [
+        [`"chat about X"`, "uses Soul's own LLM brain"],
+        [`"search web for X"`, "web search"],
+        [`"read <URL>"`, "fetch and summarize a page"],
+        [`"deep research X"`, "multi-step verified research"],
+      ],
+    },
+    {
+      name: "People & Relationships",
+      icon: BOX.dot,
+      color: C.green,
+      examples: [
+        [`"remember person X"`, "stores relationship context"],
+        [`"who is X"`, "recalls everything about a person"],
+        [`"detect mood"`, "emotional awareness"],
+      ],
+    },
+    {
+      name: "Productivity",
+      icon: BOX.dot,
+      color: C.magenta,
+      examples: [
+        [`"create task X"`, "task management"],
+        [`"start timer for X"`, "time tracking"],
+        [`"note: X"`, "quick capture"],
+        [`"remind me to X"`, "scheduled reminders"],
+      ],
+    },
+    {
+      name: "Soul Network & Sharing",
+      icon: BOX.dot,
+      color: C.blue,
+      examples: [
+        [`"create brain pack X"`, "export knowledge"],
+        [`"import brain"`, "learn from shared packs"],
+        [`"spawn child X"`, "create specialist AI children"],
+        [`"assign X to child"`, "delegate work"],
+      ],
+    },
+  ];
+
+  for (const cat of categories) {
+    console.log(`  ${cat.color}${cat.icon} ${C.bold}${cat.name}${C.reset}`);
+    for (const [example, desc] of cat.examples) {
+      console.log(`    ${C.dim}${example}${C.reset} ${C.gray}${BOX.arrowRight} ${desc}${C.reset}`);
+    }
+    console.log("");
+  }
+
+  console.log(`${C.dim}${horizontalLine()}${C.reset}`);
+  console.log(`  ${C.dim}Type any of these naturally — Soul understands!${C.reset}`);
+  console.log(`  ${C.dim}Use ${C.cyan}soul_skill_list${C.reset}${C.dim} or ${C.cyan}soul_agent(tool="list")${C.reset}${C.dim} for the complete tool list.${C.reset}`);
+  console.log(`  ${C.dim}Use ${C.cyan}/help${C.reset}${C.dim} for CLI commands.${C.reset}\n`);
+}
+
 function showCommandSuggestions(filter?: string) {
   const filtered = filter
     ? COMMANDS.filter(c => c.cmd.includes(filter) || c.desc.toLowerCase().includes(filter))
@@ -274,7 +405,9 @@ async function main() {
         console.log(`${C.green}Telegram auto-connected: ${tgChannel.name}${C.reset}`);
       }
     }
-  } catch { /* ok — no channels yet */ }
+  } catch (e: any) {
+    console.error(`${C.dim}Telegram auto-start failed: ${e.message}${C.reset}`);
+  }
 
   // Check LLM availability
   const defaultLLM = getDefaultConfig();
@@ -694,6 +827,13 @@ function handleCommand(input: string, sessionId: string, rl: readline.Interface)
       console.log(`\n${C.bold}Commands:${C.reset}`);
       showCommandSuggestions();
       console.log(`\n${C.dim}  Tips: type naturally to chat | ${C.cyan}\\${C.reset}${C.dim} at end of line for multi-line | Tab to autocomplete${C.reset}`);
+      console.log(`  ${C.dim}Soul has ${C.bold}300+${C.reset}${C.dim} capabilities beyond these commands! Type ${C.cyan}/discover${C.reset}${C.dim} to explore them.${C.reset}`);
+      break;
+
+    case "/discover":
+    case "/tools":
+    case "/capabilities":
+      showDiscoverMenu();
       break;
 
     case "/new":
@@ -719,7 +859,9 @@ function handleCommand(input: string, sessionId: string, rl: readline.Interface)
       console.log(`\n${C.bold}Soul Team:${C.reset}`);
       console.log(`  ${C.magenta}${BOX.dot} Soul Core${C.reset} — Central AI companion ${activeChildName === null ? `${C.green}(active)${C.reset}` : ""}`);
       try {
-        const rawDb = require("better-sqlite3")(require("path").join(require("os").homedir(), ".soul", "soul.db"));
+        const require_ = createRequire(import.meta.url);
+        const Database = require_("better-sqlite3");
+        const rawDb = new Database(path.join(os.homedir(), ".soul", "soul.db"));
         const children = rawDb.prepare("SELECT name, specialty, level FROM soul_children WHERE is_active = 1 ORDER BY level DESC").all() as any[];
         rawDb.close();
         if (children.length === 0) {
@@ -898,7 +1040,9 @@ function importPendingConfig() {
         console.log(`${C.green}${BOX.dot} Imported brain: ${cfg.providerName} / ${cfg.modelId}${C.reset}`);
       }
       fs.unlinkSync(pendingPath);
-    } catch { /* ignore */ }
+    } catch (e: any) {
+      console.error(`${C.dim}Failed to import pending provider: ${e.message}${C.reset}`);
+    }
   }
 
   // Import additional API provider (when user chose "Both" in setup)
@@ -916,7 +1060,9 @@ function importPendingConfig() {
         console.log(`${C.green}${BOX.dot} Imported cloud brain: ${cfg.providerName} / ${cfg.modelId}${C.reset}`);
       }
       fs.unlinkSync(apiPendingPath);
-    } catch { /* ignore */ }
+    } catch (e: any) {
+      console.error(`${C.dim}Failed to import API provider: ${e.message}${C.reset}`);
+    }
   }
 
   const featuresPath = path.join(SOUL_DIR, "pending-features.json");

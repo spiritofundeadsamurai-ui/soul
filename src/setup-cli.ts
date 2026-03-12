@@ -20,6 +20,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import * as readline from "readline";
+import { isMasterSetup, setupMaster } from "./core/master.js";
 
 const SOUL_DIR = path.join(os.homedir(), ".soul");
 const DB_PATH = path.join(SOUL_DIR, "soul.db");
@@ -258,8 +259,48 @@ async function main() {
   // Create data directory
   fs.mkdirSync(SOUL_DIR, { recursive: true });
 
-  // ═══ Step 1: Choose Brain ═══
-  step(1, "Choose Soul's Brain");
+  // ═══ Step 1: Master Binding ═══
+  step(1, "Bind Soul to You");
+  log();
+
+  let masterAlreadyBound = false;
+  try {
+    masterAlreadyBound = await isMasterSetup();
+  } catch {
+    // DB not initialized yet — master not set up
+  }
+
+  if (masterAlreadyBound) {
+    ok("Master already bound. Skipping identity setup.");
+  } else {
+    info("Soul needs to know who its master is.");
+    log();
+
+    const masterName = await ask("What's your name?");
+    if (!masterName) {
+      err("Name is required. Please run setup again.");
+      process.exit(1);
+    }
+
+    let passphrase = "";
+    while (true) {
+      passphrase = await askSecret("Choose a passphrase (min 4 chars):");
+      if (passphrase.length >= 4) break;
+      warn("Passphrase must be at least 4 characters. Try again.");
+    }
+
+    try {
+      await setupMaster(masterName, passphrase);
+      log();
+      ok(`Soul is now bound to you, ${C.bold}${masterName}${C.reset}!`);
+    } catch (e: any) {
+      err(`Failed to bind master: ${e.message}`);
+      process.exit(1);
+    }
+  }
+
+  // ═══ Step 2: Choose Brain ═══
+  step(2, "Choose Soul's Brain");
   log();
 
   // Smart recommendation based on what's detected
@@ -292,12 +333,12 @@ async function main() {
   const wantOllama = ["1", "3"].includes(brainChoice);
   const wantAPI = ["2", "3"].includes(brainChoice);
 
-  // ═══ Step 2: Configure Brain(s) ═══
+  // ═══ Step 3: Configure Brain(s) ═══
   let ollamaReady = false;
   let apiReady = false;
 
   if (wantOllama) {
-    step(2, wantAPI ? "Setup Local Brain (Ollama)" : "Setup Brain");
+    step(3, wantAPI ? "Setup Local Brain (Ollama)" : "Setup Brain");
     log();
 
     if (!sys.ollamaInstalled) {
@@ -385,7 +426,7 @@ async function main() {
   }
 
   if (wantAPI || (!ollamaReady && wantOllama)) {
-    const stepNum = wantOllama && ollamaReady ? 3 : 2;
+    const stepNum = wantOllama && ollamaReady ? 4 : 3;
     step(stepNum, wantOllama ? "Setup Cloud Brain (Backup)" : "Setup Brain");
     log();
 
@@ -430,7 +471,7 @@ async function main() {
 
   // ═══ Step 3: Live Test ═══
   if (ollamaReady || apiReady) {
-    const testStep = (wantOllama && wantAPI) ? 4 : 3;
+    const testStep = (wantOllama && wantAPI) ? 5 : 4;
     step(testStep, "Testing Brain");
     log();
 

@@ -3,6 +3,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { soul } from "./core/soul-engine.js";
+import { createToolCollector, registerSoulAgent } from "./tools/tool-router.js";
+
+// ─── All tool modules (unchanged) ───
 import { registerTools } from "./tools/index.js";
 import { registerResearchTools } from "./tools/research.js";
 import { registerSelfImproveTools } from "./tools/self-improve.js";
@@ -50,6 +53,10 @@ import { registerWebSearchTools } from "./tools/web-search.js";
 import { registerVideoCreatorTools } from "./tools/video-creator.js";
 import { registerWsNotificationTools } from "./tools/ws-notifications.js";
 import { registerMasterProfileTools } from "./tools/master-profile.js";
+import { registerSessionTools } from "./tools/sessions.js";
+import { registerPlannerTools } from "./tools/agent-planner.js";
+import { registerAutoToolTools } from "./tools/auto-tool.js";
+import { registerParallelTools } from "./tools/parallel-agent.js";
 
 async function main() {
   // Initialize Soul
@@ -58,57 +65,71 @@ async function main() {
   // Create MCP server
   const server = new McpServer({
     name: "soul",
-    version: "1.9.7",
+    version: "1.10.0",
   });
 
-  // Register all tools
-  registerTools(server);
-  registerResearchTools(server);
-  registerSelfImproveTools(server);
-  registerFamilyTools(server);
-  registerCollabTools(server);
-  registerAutonomyTools(server);
-  registerThinkingTools(server);
-  registerLifeTools(server);
-  registerCreativeTools(server);
-  registerAwarenessTools(server);
-  registerNotificationTools(server);
-  registerMultimodalTools(server);
-  registerSkillExecutorTools(server);
-  registerSyncTools(server);
-  registerNetworkTools(server);
-  registerSchedulerTools(server);
-  registerChannelTools(server);
-  registerKnowledgeTools(server);
-  registerWebSafetyTools(server);
-  registerResearchEngineTools(server);
-  registerEmotionalTools(server);
-  registerTimeTools(server);
-  registerCodeIntelligenceTools(server);
-  registerPeopleTools(server);
-  registerLearningPathTools(server);
-  registerQuickCaptureTools(server);
-  registerDailyDigestTools(server);
-  registerConversationTools(server);
-  registerBrainHubTools(server);
-  registerCoworkerTools(server);
-  registerMetaIntelligenceTools(server);
-  registerWorkflowTools(server);
-  registerDeepResearchTools(server);
-  registerGoalAutopilotTools(server);
-  registerPromptLibraryTools(server);
-  registerFeedbackLoopTools(server);
-  registerLLMTools(server);
-  registerDistillationTools(server);
-  registerGeniusTools(server);
-  registerHardwareTools(server);
-  registerClassificationTools(server);
-  registerFileSystemTools(server);
-  registerMediaCreatorTools(server);
-  registerWebSearchTools(server);
-  registerVideoCreatorTools(server);
-  registerWsNotificationTools(server);
-  registerMasterProfileTools(server);
+  // ─── MINIMAL TOOL SURFACE ───
+  // Create a collector that intercepts server.tool() calls.
+  // Core tools (14) → registered directly with MCP (always in context)
+  // Everything else (300+) → stored internally, accessible via soul_agent
+  const collector = createToolCollector(server);
+
+  // Pass collector to ALL tool modules — they call collector.tool() instead of server.tool()
+  // Only core tools actually reach the MCP server; the rest are stored for soul_agent routing
+  registerTools(collector as any);
+  registerResearchTools(collector as any);
+  registerSelfImproveTools(collector as any);
+  registerFamilyTools(collector as any);
+  registerCollabTools(collector as any);
+  registerAutonomyTools(collector as any);
+  registerThinkingTools(collector as any);
+  registerLifeTools(collector as any);
+  registerCreativeTools(collector as any);
+  registerAwarenessTools(collector as any);
+  registerNotificationTools(collector as any);
+  registerMultimodalTools(collector as any);
+  registerSkillExecutorTools(collector as any);
+  registerSyncTools(collector as any);
+  registerNetworkTools(collector as any);
+  registerSchedulerTools(collector as any);
+  registerChannelTools(collector as any);
+  registerKnowledgeTools(collector as any);
+  registerWebSafetyTools(collector as any);
+  registerResearchEngineTools(collector as any);
+  registerEmotionalTools(collector as any);
+  registerTimeTools(collector as any);
+  registerCodeIntelligenceTools(collector as any);
+  registerPeopleTools(collector as any);
+  registerLearningPathTools(collector as any);
+  registerQuickCaptureTools(collector as any);
+  registerDailyDigestTools(collector as any);
+  registerConversationTools(collector as any);
+  registerBrainHubTools(collector as any);
+  registerCoworkerTools(collector as any);
+  registerMetaIntelligenceTools(collector as any);
+  registerWorkflowTools(collector as any);
+  registerDeepResearchTools(collector as any);
+  registerGoalAutopilotTools(collector as any);
+  registerPromptLibraryTools(collector as any);
+  registerFeedbackLoopTools(collector as any);
+  registerLLMTools(collector as any);
+  registerDistillationTools(collector as any);
+  registerGeniusTools(collector as any);
+  registerHardwareTools(collector as any);
+  registerClassificationTools(collector as any);
+  registerFileSystemTools(collector as any);
+  registerMediaCreatorTools(collector as any);
+  registerWebSearchTools(collector as any);
+  registerVideoCreatorTools(collector as any);
+  registerWsNotificationTools(collector as any);
+  registerMasterProfileTools(collector as any);
+  registerSessionTools(collector as any);
+  registerPlannerTools(collector as any);
+  registerAutoToolTools(collector as any);
+  registerParallelTools(collector as any);
+
+  // Register soul_agent meta-tool — gateway to ALL 300+ tools
+  registerSoulAgent(server);
 
   // Auto-start Telegram polling if previously connected
   try {
@@ -119,7 +140,9 @@ async function main() {
       const result = await startTelegramPolling(tgChannel.name);
       if (result.success) console.error(`[Soul] Telegram auto-connected: ${tgChannel.name}`);
     }
-  } catch { /* ok — no channels yet */ }
+  } catch (e: any) {
+    console.error(`[Soul] Telegram auto-start failed: ${e.message}`);
+  }
 
   // Log startup
   if (needsSetup) {
@@ -129,7 +152,7 @@ async function main() {
   } else {
     const master = soul.getMaster();
     console.error(
-      `[Soul] Awakened. Bound to ${master?.name}. Ready to serve.`
+      `[Soul] Awakened. Bound to ${master?.name}. 15 core tools + soul_agent (300+ capabilities). Ready.`
     );
   }
 

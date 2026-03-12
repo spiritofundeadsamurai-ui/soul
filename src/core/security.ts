@@ -27,7 +27,8 @@ export function safePath(userPath: string, allowedBase?: string): string {
   const resolved = path.resolve(base, userPath);
   const normalizedBase = path.resolve(base);
 
-  if (!resolved.startsWith(normalizedBase + path.sep) && resolved !== normalizedBase) {
+  const prefix = normalizedBase.endsWith(path.sep) ? normalizedBase : normalizedBase + path.sep;
+  if (!resolved.startsWith(prefix) && resolved !== normalizedBase) {
     throw new Error(`Path traversal blocked: path must be within ${normalizedBase}`);
   }
   return resolved;
@@ -402,8 +403,28 @@ export function decryptSecret(encrypted: string): string {
     let decrypted = decipher.update(parts[3], "hex", "utf-8");
     decrypted += decipher.final("utf-8");
     return decrypted;
+  } catch (e: any) {
+    throw new Error(
+      "API key decryption failed. Machine identity may have changed. Please re-add your API key with soul_llm_add."
+    );
+  }
+}
+
+/**
+ * Safe wrapper for decryptSecret — backward compatible with plaintext keys.
+ * 1. If string doesn't look encrypted (no ":" separator), return as-is (plaintext)
+ * 2. Try decryptSecret()
+ * 3. On failure, return original string (assume plaintext)
+ */
+export function safeDecryptSecret(encrypted: string): string {
+  if (!encrypted) return "";
+  // If it doesn't contain ":" at all, it's plaintext — return as-is
+  if (!encrypted.includes(":")) return encrypted;
+  try {
+    return decryptSecret(encrypted);
   } catch {
-    return ""; // decryption failed — key changed or corrupted
+    // Decryption failed — assume plaintext (backward compat)
+    return encrypted;
   }
 }
 

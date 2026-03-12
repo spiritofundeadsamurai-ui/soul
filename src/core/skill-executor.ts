@@ -11,6 +11,7 @@
 
 import { getRawDb } from "../db/index.js";
 import { remember, hybridSearch } from "../memory/memory-engine.js";
+import { verifyMaster } from "./master.js";
 
 export interface ExecutableSkill {
   id: number;
@@ -129,9 +130,18 @@ export async function createExecutableSkill(input: {
   return mapSkill(row);
 }
 
-export async function approveSkill(skillId: number): Promise<ExecutableSkill | null> {
+export async function approveSkill(skillId: number, passphrase?: string): Promise<ExecutableSkill | null> {
   ensureSkillTables();
   const rawDb = getRawDb();
+
+  // Master verification required
+  if (!passphrase) {
+    throw new Error("Passphrase required to approve skills. Only master can approve.");
+  }
+  const verified = await verifyMaster(passphrase);
+  if (!verified) {
+    throw new Error("Master verification failed. Invalid passphrase.");
+  }
 
   rawDb
     .prepare("UPDATE soul_executable_skills SET is_approved = 1 WHERE id = ?")
@@ -293,6 +303,9 @@ function isSelfDestructive(code: string): boolean {
     // Encoding tricks
     "atob(", "btoa(", "buffer.from",
     "string.fromcharcode",
+    // Git destructive operations
+    "push --force", "push -f ", "reset --hard", "clean -f",
+    "git push -f", "git push --force",
     // Shutdown
     "shutdown", "reboot", "taskkill",
   ];

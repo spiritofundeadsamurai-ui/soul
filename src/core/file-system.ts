@@ -21,12 +21,26 @@ const DEFAULT_MAX_ROWS = 500;
 
 /** File extensions Soul is allowed to read */
 const ALLOWED_EXTENSIONS = new Set([
+  // Text & code
   ".txt", ".md", ".json", ".csv", ".ts", ".js", ".py", ".html", ".css",
   ".yaml", ".yml", ".xml", ".log", ".sql", ".sh", ".bat", ".ps1",
   ".toml", ".ini", ".cfg", ".conf", ".jsx", ".tsx", ".vue", ".svelte",
   ".go", ".rs", ".java", ".kt", ".c", ".cpp", ".h", ".hpp",
   ".rb", ".php", ".r", ".m", ".swift", ".dart",
   ".gitignore", ".dockerignore", ".editorconfig",
+  // Documents
+  ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+  ".odt", ".ods", ".odp", ".rtf",
+  // Data
+  ".tsv", ".jsonl", ".ndjson", ".parquet", ".sqlite", ".db",
+  // Images
+  ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".svg", ".webp", ".ico", ".tiff",
+  // Archives (list/info only)
+  ".zip", ".rar", ".7z", ".tar", ".gz", ".bz2",
+  // Media metadata
+  ".mp3", ".mp4", ".wav", ".avi", ".mkv", ".mov",
+  // Specialized
+  ".anb", ".i2", ".graphml", ".gexf", ".kml", ".kmz", ".gpx",
 ]);
 
 /** File names that are allowed even without standard extensions */
@@ -199,7 +213,9 @@ function validatePath(filePath: string): string {
   // Must be within at least one allowed base directory
   const isInAllowedBase = allowedBaseDirs.some(base => {
     const normalizedBase = path.resolve(base);
-    return resolved.startsWith(normalizedBase + path.sep) || resolved === normalizedBase;
+    // Handle drive roots: "D:\" already ends with sep, don't double it
+    const prefix = normalizedBase.endsWith(path.sep) ? normalizedBase : normalizedBase + path.sep;
+    return resolved.startsWith(prefix) || resolved === normalizedBase;
   });
 
   if (!isInAllowedBase) {
@@ -314,6 +330,34 @@ export function readFile(
     throw new Error(
       `File too large: ${formatSize(stat.size)} exceeds ${formatSize(MAX_FILE_SIZE)} limit`
     );
+  }
+
+  // Detect binary files by extension
+  const ext = path.extname(resolved).toLowerCase();
+  const binaryExts = new Set([
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+    ".odt", ".ods", ".odp",
+    ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".ico", ".tiff", ".svg",
+    ".zip", ".rar", ".7z", ".tar", ".gz", ".bz2",
+    ".mp3", ".mp4", ".wav", ".avi", ".mkv", ".mov",
+    ".anb", ".i2", ".sqlite", ".db", ".parquet",
+  ]);
+
+  if (binaryExts.has(ext)) {
+    // For binary files: return file info + try to extract readable text
+    const info = `[Binary file: ${path.basename(resolved)}]\nType: ${ext}\nSize: ${formatSize(stat.size)}\nPath: ${resolved}`;
+
+    // For CSV-like data in xlsx, try to read with basic parsing
+    if (ext === ".csv" || ext === ".tsv") {
+      // These are actually text — fall through to normal reading
+    } else {
+      return {
+        content: info + "\n\nThis is a binary file. Use soul_read_csv for spreadsheets, or soul_read_doc for documents.",
+        lines: 0,
+        size: stat.size,
+        path: resolved,
+      };
+    }
   }
 
   const encoding = options.encoding || "utf-8";

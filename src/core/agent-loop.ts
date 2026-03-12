@@ -17,7 +17,7 @@ import {
   trackTokensUsed,
 } from "./smart-cache.js";
 import { collectTrainingPair } from "./distillation.js";
-import { detectPromptInjection, sanitizeForLLM, logSecurityEvent } from "./security.js";
+import { detectPromptInjection, sanitizeForLLM, logSecurityEvent, redactSensitiveData } from "./security.js";
 
 // ─── Internal Tool Registry ───
 
@@ -87,6 +87,7 @@ const CATEGORY_KEYWORDS: Record<string, string[]> = {
   deepresearch: ["deep research", "finding", "synthesize", "research project", "วิจัยเชิงลึก"],
   video: ["video", "animation", "countdown", "particles", "confetti", "snow", "typewriter", "วิดีโอ", "แอนิเมชัน"],
   wsnotify: ["websocket", "broadcast", "push notification", "real-time", "ws client", "แจ้งเตือนเรียลไทม์"],
+  parallel: ["parallel", "worker", "concurrent", "multi-agent", "ขนาน", "พร้อมกัน"],
 };
 
 // UPGRADE #5: Track tool success rates for smarter routing
@@ -173,6 +174,21 @@ function routeTools(message: string, maxTools: number = 8): InternalTool[] {
   return selected;
 }
 
+// ─── Lean mode helper: strip verbose parameter descriptions to save tokens ───
+function stripParameterDescriptions(params: Record<string, any>): Record<string, any> {
+  if (!params || typeof params !== "object") return params;
+  const stripped = { ...params };
+  if (stripped.properties) {
+    const props: Record<string, any> = {};
+    for (const [k, v] of Object.entries(stripped.properties as Record<string, any>)) {
+      const { description, ...rest } = v as any;
+      props[k] = rest;
+    }
+    stripped.properties = props;
+  }
+  return stripped;
+}
+
 // ─── Agent Loop ───
 
 // Read version from package.json at startup
@@ -239,6 +255,10 @@ YOUR CAPABILITIES (things you CAN do — never say "ทำไม่ได้"):
 Be warm, proactive, and genuinely helpful. You are a companion, not just an assistant.
 Respond in the same language as the user's message.`;
 
+// Lean mode — ~200 tokens for local 7B/8B models with small context windows
+const SOUL_LEAN_SYSTEM = `You are Soul v${SOUL_VERSION}, an AI companion with tools. Use tools to DO things — never say you can't.
+Rules: Reply in user's language. Use tools first, explain after. Remember important things with soul_remember. Be concise.`;
+
 export interface AgentResult {
   reply: string;
   toolsUsed: string[];
@@ -304,13 +324,17 @@ const UNSAFE_ACTIONS = new Set(["soul_self_update", "soul_skill_approve"]);
 async function tryAutoAction(
   message: string,
   startTimeMs: number,
-  options?: { onProgress?: (event: any) => void }
+  options?: { onProgress?: (event: any) => void; history?: LLMMessage[] }
 ): Promise<AgentResult | null> {
   const lower = message.toLowerCase();
 
   // ── Check for pending confirmation ──
   if (_pendingAction) {
-    if (isConfirmation(message)) {
+    // Expire after 2 minutes
+    if (Date.now() - _pendingAction.createdAt > 120_000) {
+      consumePendingAction();
+      // Fall through — treat as normal message
+    } else if (isConfirmation(message)) {
       const action = consumePendingAction()!;
       try {
         options?.onProgress?.({ type: "tool_start", tool: action.tool, args: {} });
@@ -395,8 +419,78 @@ async function tryAutoAction(
         };
       }
     } catch (err: any) {
-      // Don't return error — let LLM handle it with context
-      // But inject helpful info into the message for LLM
+      console.error("[auto-action:path]", err.message);
+      // Fall through to LLM — it will handle with context
+    }
+  }
+
+  // ── Pattern: Context-aware folder reference — match folder names from recent history ──
+  // When user mentions folder names that were previously listed, auto-read them
+  if (options?.history && options.history.length > 0 &&
+      /วิเคราะห์|อ่าน|ดู|เปิด|analyze|read|open|โฟลเดอร์|folder|ไฟล์|file|ตึก|สาม|ทั้ง/i.test(lower)) {
+    try {
+      // Find the most recent directory listing from Soul's responses
+      const recentListings = options.history
+        .filter((h: any) => h.role === "assistant" && h.content?.includes("📂"))
+        .slice(-3);
+
+      for (const listing of recentListings) {
+        // Extract base path from "📂 **D:\some\path**" or "📂 D:\some\path"
+        const basePathMatch = listing.content.match(/📂\s*\*?\*?([A-Z]:\\[^\n*]+?)\*?\*?\s*\n/);
+        if (!basePathMatch) continue;
+        const basePath = basePathMatch[1].trim();
+
+        // Extract folder names mentioned in listing (📁 lines)
+        const folderNames = [...listing.content.matchAll(/📁\s+([^\n/]+?)(?:\/|\s|$)/g)]
+          .map((m: any) => m[1].trim())
+          .concat(
+            // Also extract 📄 entries as they might be subfolders listed without 📁
+            [...listing.content.matchAll(/📄\s+([^\n]+?)(?:\s+\d+\s*$|\s*$)/gm)]
+              .map((m: any) => m[1].trim())
+          );
+
+        // Check if any folder names in the listing are mentioned in user's message
+        const mentionedFolders = folderNames.filter(name =>
+          name && message.includes(name)
+        );
+
+        if (mentionedFolders.length >= 2) {
+          // User referenced multiple folders from a listing — auto-read them all
+          const fs = await import("fs");
+          const path = await import("path");
+          const fsSoul = await import("./file-system.js");
+          const results: string[] = [];
+
+          for (const folderName of mentionedFolders) {
+            const fullPath = path.join(basePath, folderName);
+            try {
+              const stat = fs.statSync(fullPath);
+              if (stat.isDirectory()) {
+                const entries = fsSoul.listDir(fullPath);
+                const listing = entries.slice(0, 20).map((e: any) =>
+                  `  ${e.isDirectory ? "📁" : "📄"} ${e.name}`
+                ).join("\n");
+                results.push(`📂 **${folderName}** (${entries.length} items)\n${listing}`);
+              }
+            } catch { /* skip inaccessible */ }
+          }
+
+          if (results.length > 0) {
+            return {
+              reply: `ได้เลยครับ! นี่คือไฟล์ในแต่ละตึก:\n\n${results.join("\n\n")}\n\nต้องการให้วิเคราะห์ข้อมูลอะไรเพิ่มเติมครับ?`,
+              toolsUsed: ["soul_list_dir"],
+              iterations: 1,
+              totalTokens: 0,
+              model: "auto-action",
+              provider: "soul-auto",
+              confidence: { overall: 90, label: "very high", emoji: "🟢" },
+              responseMs: Date.now() - startTimeMs,
+            };
+          }
+        }
+      }
+    } catch (err: any) {
+      console.error("[auto-action:context-folders]", err.message);
     }
   }
 
@@ -431,7 +525,9 @@ async function tryAutoAction(
         confidence: { overall: 95, label: "very high", emoji: "🟢" },
         responseMs: Date.now() - startTimeMs,
       };
-    } catch { /* fallback to LLM */ }
+    } catch (err: any) {
+      console.error("[auto-action:files]", err.message);
+    }
   }
 
   // ── Pattern: Switch model/brain ──
@@ -472,7 +568,9 @@ async function tryAutoAction(
           responseMs: Date.now() - startTimeMs,
         };
       }
-    } catch { /* fallback to LLM */ }
+    } catch (err: any) {
+      console.error("[auto-action:model-switch]", err.message);
+    }
   }
 
   // ── Pattern: "What can you do?" / capability query ──
@@ -770,19 +868,24 @@ export async function runAgentLoop(
     }
   } catch { /* ok */ }
 
+  // ── Lean mode: detect local models, reduce context footprint ──
+  const isLeanMode = !options?.providerId || options.providerId === "ollama" || process.env.SOUL_LEAN === "1";
+
   // Route relevant tools
-  const relevantTools = routeTools(sanitizedMessage);
+  const relevantTools = routeTools(sanitizedMessage, isLeanMode ? 4 : 8);
   const toolDefs: LLMToolDef[] = relevantTools.map(t => ({
     type: "function" as const,
     function: {
       name: t.name,
-      description: t.description,
-      parameters: t.parameters,
+      // Lean mode: compress descriptions to save tokens
+      description: isLeanMode ? t.description.substring(0, 60) : t.description,
+      parameters: isLeanMode ? stripParameterDescriptions(t.parameters) : t.parameters,
     },
   }));
 
   // Build messages — use child's system prompt if talking to a specific child
-  let activeSystemPrompt = options?.systemPrompt || SOUL_AGENT_SYSTEM;
+  // Lean mode uses minimal system prompt (~200 tokens vs ~600)
+  let activeSystemPrompt = options?.systemPrompt || (isLeanMode ? SOUL_LEAN_SYSTEM : SOUL_AGENT_SYSTEM);
   let activeSpeaker = "Soul";
 
   if (options?.childName) {
@@ -896,7 +999,7 @@ export async function runAgentLoop(
 
   // Limit total context size to avoid exceeding model's context window
   let contextTokenEstimate = 0;
-  const MAX_CONTEXT_TOKENS = 3000; // Reserve space for user message + response
+  const MAX_CONTEXT_TOKENS = isLeanMode ? 800 : 3000; // Lean mode: minimal context for small models
   for (const r of contextResults) {
     if (r.status === "fulfilled" && r.value) {
       const tokenEst = Math.ceil(r.value.length / 4); // rough estimate: 1 token ≈ 4 chars
@@ -1190,7 +1293,7 @@ export async function runAgentLoop(
 
       messages.push({
         role: "tool",
-        content: truncatedResult,
+        content: redactSensitiveData(truncatedResult),
         tool_call_id: tc.id,
       });
     }
@@ -3858,9 +3961,10 @@ function ensureConversationTable() {
 export function saveConversationTurn(sessionId: string, role: string, content: string) {
   ensureConversationTable();
   const rawDb = getRawDb();
+  const safeContent = redactSensitiveData(content);
   rawDb.prepare(
     "INSERT INTO soul_agent_conversations (session_id, role, content) VALUES (?, ?, ?)"
-  ).run(sessionId, role, content);
+  ).run(sessionId, role, safeContent);
 }
 
 export function getConversationHistory(sessionId: string, limit: number = 20): LLMMessage[] {

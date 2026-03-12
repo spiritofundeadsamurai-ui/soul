@@ -356,29 +356,28 @@ export function registerTools(server: McpServer) {
     "List Soul's available skills and tools",
     {},
     async () => {
-      const toolList = [
-        "soul_ask — Ask a question",
+      const coreTools = [
+        "soul_setup — First-time master binding",
+        "soul_status — System health & stats",
         "soul_remember — Store a memory",
-        "soul_search — Search memories",
-        "soul_learn — Teach something new",
-        "soul_reflect — Get random wisdom",
-        "soul_forget — Supersede a memory",
-        "soul_status — System stats",
+        "soul_search — Search everything",
+        "soul_ask — Ask Soul questions",
+        "soul_learn — Teach Soul",
         "soul_think — Guided reasoning",
-        "soul_who_am_i — Identity & philosophy",
-        "soul_verify_master — Verify master",
-        "soul_teach — Add wisdom/principle",
-        "soul_skills — This list",
-        "soul_configure — Update config",
-        "soul_journal — Add journal entry",
-        "soul_recap — Recent memory summary",
+        "soul_note — Quick capture",
+        "soul_mood — Emotional tracking",
+        "soul_goal — Goals management",
+        "soul_smart_chat — Chat with Soul's LLM brain",
+        "soul_web_search — Search the web",
+        "soul_read_file — Read files",
+        "soul_create_chart — Create visualizations",
       ];
 
       return {
         content: [
           {
             type: "text" as const,
-            text: `Soul Skills (${toolList.length} tools):\n\n${toolList.join("\n")}`,
+            text: `Soul v1.10.0 — Minimal Tool Surface\n\nCore Tools (${coreTools.length}, always in context):\n${coreTools.join("\n")}\n\n+ soul_agent — Gateway to 300+ extended capabilities\n  Use: soul_agent(tool="list") to see all`,
           },
         ],
       };

@@ -18,7 +18,7 @@
 import { getRawDb } from "../db/index.js";
 import { remember, hybridSearch } from "../memory/memory-engine.js";
 import { getLearnings } from "../memory/learning.js";
-import { isUrlSafe, logSecurityEvent } from "./security.js";
+import { isUrlSafe, logSecurityEvent, containsSensitiveData } from "./security.js";
 
 export interface SharedKnowledge {
   id: number;
@@ -82,8 +82,10 @@ export async function prepareShareableKnowledge(): Promise<SharedKnowledge[]> {
         .get(item.pattern, item.category) as any;
 
       if (row) results.push(mapShared(row));
-    } catch {
-      // Skip duplicates
+    } catch (err: any) {
+      if (!err.message?.includes("UNIQUE constraint")) {
+        console.error("[network] prepareShareableKnowledge insert failed:", err.message);
+      }
     }
   }
 
@@ -126,7 +128,8 @@ export async function receiveKnowledge(
       });
 
       accepted++;
-    } catch {
+    } catch (err: any) {
+      console.error("[network] receiveKnowledge failed for pattern:", err.message);
       rejected++;
     }
   }
@@ -160,7 +163,7 @@ export async function addPeer(
 
     return { success: true, message: `Peer "${name}" added at ${url}` };
   } catch (error: any) {
-    return { success: false, message: "Failed to add peer." };
+    return { success: false, message: `Failed to add peer: ${error.message}` };
   }
 }
 
@@ -254,8 +257,6 @@ function categorizePattern(pattern: string): string {
 }
 
 function containsPrivateData(text: string): boolean {
-  // Use the comprehensive sensitive data detection from security module
-  const { containsSensitiveData } = require("./security.js");
   return containsSensitiveData(text);
 }
 

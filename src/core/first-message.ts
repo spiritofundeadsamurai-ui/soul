@@ -11,6 +11,42 @@
 
 import { getRawDb } from "../db/index.js";
 
+// ─── i18n: detect language from SOUL_LANG env or default to Thai ───
+function getLang(): "th" | "en" {
+  const env = process.env.SOUL_LANG?.toLowerCase();
+  if (env === "en" || env === "english") return "en";
+  return "th";
+}
+
+const i18n = {
+  th: {
+    morning: "อรุณสวัสดิ์ครับ",
+    afternoon: "สวัสดีตอนบ่ายครับ",
+    evening: "สวัสดีตอนเย็นครับ",
+    night: "ดึกแล้วนะครับ",
+    awayDays: (d: number) => `ห่างกันมา ${d} วันแล้ว`,
+    awayHours: (h: number) => `ห่างกันมา ${h} ชั่วโมง`,
+    dreamsIntro: "\nระหว่างที่ไม่ได้คุยกัน ผมคิดเรื่องนี้:",
+    unresolvedIntro: "\nมีเรื่องที่อยากถามเพิ่มเติม:",
+    contradiction: (topic: string, old_s: string, new_s: string) => `เรื่อง "${topic}": เคยบอกว่า "${old_s}" แต่ล่าสุดบอกว่า "${new_s}"`,
+    interests: (topics: string) => `\nเรื่องที่คุณสนใจช่วงนี้: ${topics}`,
+    ready: "\nมีอะไรให้ช่วยครับ?",
+  },
+  en: {
+    morning: "Good morning!",
+    afternoon: "Good afternoon!",
+    evening: "Good evening!",
+    night: "It's late!",
+    awayDays: (d: number) => `It's been ${d} days since we last talked`,
+    awayHours: (h: number) => `It's been ${h} hours since we last talked`,
+    dreamsIntro: "\nWhile you were away, I thought about:",
+    unresolvedIntro: "\nI have some follow-up questions:",
+    contradiction: (topic: string, old_s: string, new_s: string) => `About "${topic}": you said "${old_s}" but later said "${new_s}"`,
+    interests: (topics: string) => `\nYour recent interests: ${topics}`,
+    ready: "\nHow can I help?",
+  },
+};
+
 export interface FirstMessageContext {
   greeting: string;
   timeOfDay: "morning" | "afternoon" | "evening" | "night";
@@ -32,18 +68,21 @@ export function generateFirstMessage(): FirstMessageContext {
   let timeOfDay: FirstMessageContext["timeOfDay"];
   let greeting: string;
 
+  const lang = getLang();
+  const t = i18n[lang];
+
   if (hour >= 5 && hour < 12) {
     timeOfDay = "morning";
-    greeting = "อรุณสวัสดิ์ครับ";
+    greeting = t.morning;
   } else if (hour >= 12 && hour < 17) {
     timeOfDay = "afternoon";
-    greeting = "สวัสดีตอนบ่ายครับ";
+    greeting = t.afternoon;
   } else if (hour >= 17 && hour < 21) {
     timeOfDay = "evening";
-    greeting = "สวัสดีตอนเย็นครับ";
+    greeting = t.evening;
   } else {
     timeOfDay = "night";
-    greeting = "ดึกแล้วนะครับ";
+    greeting = t.night;
   }
 
   // How long since last chat
@@ -89,7 +128,8 @@ export function generateFirstMessage(): FirstMessageContext {
     `).all() as any[];
 
     for (const c of contradictions) {
-      unresolvedItems.push(`เรื่อง "${c.topic}": เคยบอกว่า "${c.old_statement}" แต่ล่าสุดบอกว่า "${c.new_statement}"`);
+      const lang = getLang();
+      unresolvedItems.push(i18n[lang].contradiction(c.topic, c.old_statement, c.new_statement));
     }
   } catch { /* ok */ }
 
@@ -125,10 +165,11 @@ export function generateFirstMessage(): FirstMessageContext {
   // Build pending insights
   const pendingInsights: string[] = [];
   if (hoursSinceLastChat > 0) {
+    const lang = getLang();
     if (hoursSinceLastChat >= 24) {
-      pendingInsights.push(`ห่างกันมา ${Math.floor(hoursSinceLastChat / 24)} วันแล้ว`);
+      pendingInsights.push(i18n[lang].awayDays(Math.floor(hoursSinceLastChat / 24)));
     } else if (hoursSinceLastChat >= 2) {
-      pendingInsights.push(`ห่างกันมา ${hoursSinceLastChat} ชั่วโมง`);
+      pendingInsights.push(i18n[lang].awayHours(hoursSinceLastChat));
     }
   }
 
@@ -154,9 +195,12 @@ export async function formatFirstMessage(ctx: FirstMessageContext): Promise<stri
     parts.push(ctx.pendingInsights.join(" "));
   }
 
+  const lang = getLang();
+  const t = i18n[lang];
+
   // Dreams
   if (ctx.pendingDreams.length > 0) {
-    parts.push("\nระหว่างที่ไม่ได้คุยกัน ผมคิดเรื่องนี้:");
+    parts.push(t.dreamsIntro);
     for (const d of ctx.pendingDreams) {
       parts.push(`  • ${d}`);
     }
@@ -164,7 +208,7 @@ export async function formatFirstMessage(ctx: FirstMessageContext): Promise<stri
 
   // Unresolved
   if (ctx.unresolvedItems.length > 0) {
-    parts.push("\nมีเรื่องที่อยากถามเพิ่มเติม:");
+    parts.push(t.unresolvedIntro);
     for (const u of ctx.unresolvedItems) {
       parts.push(`  • ${u}`);
     }
@@ -172,7 +216,7 @@ export async function formatFirstMessage(ctx: FirstMessageContext): Promise<stri
 
   // Suggestions
   if (ctx.suggestedTopics.length > 0) {
-    parts.push(`\nเรื่องที่คุณสนใจช่วงนี้: ${ctx.suggestedTopics.join(", ")}`);
+    parts.push(t.interests(ctx.suggestedTopics.join(", ")));
   }
 
   // Proactive insights
@@ -184,7 +228,7 @@ export async function formatFirstMessage(ctx: FirstMessageContext): Promise<stri
     }
   } catch { /* ok */ }
 
-  parts.push("\nมีอะไรให้ช่วยครับ?");
+  parts.push(t.ready);
 
   return parts.join("\n");
 }

@@ -152,11 +152,16 @@ export async function sendMessage(
       });
 
       deliveryStatus = response.ok ? "delivered" : "failed";
-    } catch {
+    } catch (e: any) {
+      console.error(`[Channels] Webhook delivery failed: ${e.message}`);
       deliveryStatus = "failed";
     }
   } else if (channel.channel_type === "telegram" && config.botToken && config.chatId) {
     deliveryStatus = await telegramSend(config.botToken, config.chatId, content);
+  } else if (channel.channel_type === "slack" && config.botToken && config.channelId) {
+    deliveryStatus = await slackSend(config.botToken, config.channelId, content);
+  } else if (channel.channel_type === "discord" && config.botToken && config.channelId) {
+    deliveryStatus = await discordSend(config.botToken, config.channelId, content);
   }
 
   // Update status
@@ -203,6 +208,7 @@ export async function getMessageHistory(
 /** Send a message via Telegram Bot API */
 async function telegramSend(botToken: string, chatId: string, text: string): Promise<string> {
   try {
+    // Try with Markdown first
     const response = await fetch(
       `https://api.telegram.org/bot${botToken}/sendMessage`,
       {
@@ -216,8 +222,25 @@ async function telegramSend(botToken: string, chatId: string, text: string): Pro
         signal: AbortSignal.timeout(10000),
       }
     );
-    return response.ok ? "delivered" : "failed";
-  } catch {
+    if (response.ok) return "delivered";
+
+    // Markdown failed — retry as plain text (common with paths, special chars)
+    console.error("[Telegram] Markdown send failed, retrying as plain text");
+    const plainResponse = await fetch(
+      `https://api.telegram.org/bot${botToken}/sendMessage`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text,
+        }),
+        signal: AbortSignal.timeout(10000),
+      }
+    );
+    return plainResponse.ok ? "delivered" : "failed";
+  } catch (e: any) {
+    console.error(`[Telegram] Send failed: ${e.message}`);
     return "failed";
   }
 }
@@ -396,7 +419,9 @@ export async function startTelegramPolling(channelName: string): Promise<{
       } catch { /* process dead — take over */ }
     }
     rawDb.prepare("INSERT OR REPLACE INTO soul_polling_lock (id, pid, started_at) VALUES (1, ?, datetime('now'))").run(process.pid);
-  } catch { /* ok — proceed without lock */ }
+  } catch (lockErr: any) {
+    console.error("[Telegram] Warning: could not acquire polling lock:", lockErr.message);
+  }
 
   _pollingActive = true;
   _pollingAbort = new AbortController();
@@ -514,6 +539,7 @@ async function pollTelegramLoop(
         // Skip bot commands that are just /start
         if (text === "/start") {
           await telegramSend(botToken, chatId, `สวัสดีครับ! ผม Soul — AI companion ของคุณ 🌟\n\nส่งข้อความมาได้เลย ผมพร้อมช่วยเสมอ!`);
+          _processingMessage = false;
           continue;
         }
 
@@ -534,6 +560,24 @@ async function pollTelegramLoop(
         let reply: string;
         try {
           const { runAgentLoop } = await import("./agent-loop.js");
+
+          // Build conversation history from recent messages for context
+          let conversationHistory: { role: string; content: string }[] = [];
+          try {
+            const recentMsgs = rawDb
+              .prepare(
+                `SELECT direction, content FROM soul_messages
+                 WHERE channel_id = ? AND content IS NOT NULL AND content != ''
+                 ORDER BY created_at DESC LIMIT 20`
+              )
+              .all(channelId) as any[];
+            // Reverse to chronological order, map to role/content
+            conversationHistory = recentMsgs.reverse().map((m: any) => ({
+              role: m.direction === "inbound" ? "user" : "assistant",
+              content: m.content,
+            }));
+          } catch { /* ok — no history */ }
+
           const result = await runAgentLoop(text, {
             systemPrompt: `You are Soul v${SOUL_VERSION || "1.9.1"}, an AI companion responding via Telegram to ${fromName}.
 RULES:
@@ -541,7 +585,9 @@ RULES:
 2. Keep responses concise (1-3 paragraphs max).
 3. You have 308 tools — you CAN read files, manage things, search, remember, etc. NEVER say "ทำไม่ได้".
 4. NEVER output <think> tags, internal reasoning, or duplicate responses.
-5. Send ONE reply only. Do not repeat yourself.`,
+5. Send ONE reply only. Do not repeat yourself.
+6. Use context from previous messages — the user may refer to files/folders mentioned earlier. DO NOT ask them to repeat information you already have.`,
+            history: conversationHistory as any[],
             maxIterations: 5,
           });
           reply = result.reply || "ขอโทษครับ ไม่สามารถประมวลผลได้";
@@ -591,6 +637,684 @@ RULES:
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// ============================================
+// SLACK — Inbound webhook + outbound via Web API
+// ============================================
+
+/** Send a message via Slack Web API (chat.postMessage) */
+async function slackSend(botToken: string, channelId: string, text: string): Promise<string> {
+  try {
+    const response = await fetch("https://slack.com/api/chat.postMessage", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${botToken}`,
+      },
+      body: JSON.stringify({
+        channel: channelId,
+        text,
+      }),
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (!response.ok) return "failed";
+    const data = (await response.json()) as any;
+    return data.ok ? "delivered" : "failed";
+  } catch (e: any) {
+    console.error(`[Slack] Send failed: ${e.message}`);
+    return "failed";
+  }
+}
+
+/**
+ * Auto-setup Slack — give a bot token + channel, Soul configures everything:
+ * 1. Validate the token with auth.test
+ * 2. Register the channel
+ * 3. Send a welcome message
+ */
+export async function slackAutoSetup(botToken: string, channelId: string, channelName?: string): Promise<{
+  success: boolean;
+  botName: string;
+  teamName: string;
+  channelName: string;
+  message: string;
+}> {
+  // 1. Validate token
+  let botName = "Soul Bot";
+  let teamName = "unknown";
+  try {
+    const authResp = await fetch("https://slack.com/api/auth.test", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${botToken}`,
+      },
+      signal: AbortSignal.timeout(10000),
+    });
+    const authData = (await authResp.json()) as any;
+    if (!authData.ok) {
+      return { success: false, botName, teamName, channelName: "", message: `Slack auth failed: ${authData.error || "invalid token"}` };
+    }
+    botName = authData.user || "Soul Bot";
+    teamName = authData.team || "unknown";
+  } catch (e: any) {
+    return { success: false, botName, teamName, channelName: "", message: `Slack auth failed: ${e.message}` };
+  }
+
+  const name = channelName || `slack-${teamName}`;
+
+  // 2. Register channel
+  await addChannel({
+    name,
+    channelType: "slack",
+    config: { botToken, channelId, botName, teamName },
+  });
+
+  // 3. Remember
+  await remember({
+    content: `[Slack] Bot "${botName}" connected to team "${teamName}" as channel "${name}". ChannelId: ${channelId}`,
+    type: "knowledge",
+    tags: ["slack", "setup", "channel"],
+    source: "channels-engine",
+  });
+
+  // 4. Send welcome message
+  const sendStatus = await slackSend(botToken, channelId, `Soul connected to Slack! I'm now listening on this channel.`);
+
+  return {
+    success: true,
+    botName,
+    teamName,
+    channelName: name,
+    message: sendStatus === "delivered"
+      ? `Bot "${botName}" connected to team "${teamName}" as channel "${name}". Welcome message sent. Set up the /api/slack/events webhook in your Slack app to receive inbound messages.`
+      : `Bot "${botName}" connected to team "${teamName}" as channel "${name}". Warning: welcome message failed to send — check bot permissions (chat:write scope required).`,
+  };
+}
+
+/**
+ * Handle incoming Slack event payload (from /api/slack/events webhook)
+ * Returns a response body to send back to Slack.
+ */
+export async function handleSlackEvent(payload: any): Promise<{
+  statusCode: number;
+  body: any;
+}> {
+  // URL verification challenge (Slack sends this when setting up Events API)
+  if (payload.type === "url_verification") {
+    return { statusCode: 200, body: { challenge: payload.challenge } };
+  }
+
+  // Event callback
+  if (payload.type === "event_callback") {
+    const event = payload.event;
+
+    // Only handle message events (not bot messages or subtypes like edits)
+    if (event?.type === "message" && !event.bot_id && !event.subtype) {
+      const text = event.text || "";
+      const userId = event.user || "unknown";
+      const slackChannelId = event.channel || "";
+
+      if (!text.trim()) {
+        return { statusCode: 200, body: { ok: true } };
+      }
+
+      // Find the Soul channel matching this Slack channel
+      ensureChannelTables();
+      const rawDb = getRawDb();
+      const channels = rawDb
+        .prepare("SELECT * FROM soul_channels WHERE channel_type = 'slack' AND is_active = 1")
+        .all() as any[];
+
+      let matchedChannel: any = null;
+      let config: any = {};
+
+      for (const ch of channels) {
+        const cfg = JSON.parse(ch.config || "{}");
+        if (cfg.channelId === slackChannelId) {
+          matchedChannel = ch;
+          config = cfg;
+          break;
+        }
+      }
+
+      if (!matchedChannel) {
+        // No matching channel configured — accept but ignore
+        return { statusCode: 200, body: { ok: true } };
+      }
+
+      // Process the inbound message (non-blocking)
+      processSlackInbound(matchedChannel, config, text, userId, slackChannelId).catch((err) => {
+        console.error("[Slack] Inbound processing error:", err.message);
+      });
+    }
+
+    return { statusCode: 200, body: { ok: true } };
+  }
+
+  return { statusCode: 200, body: { ok: true } };
+}
+
+/**
+ * Process an inbound Slack message — log it, run agent loop, reply
+ */
+async function processSlackInbound(
+  channel: any,
+  config: any,
+  text: string,
+  userId: string,
+  slackChannelId: string
+) {
+  const rawDb = getRawDb();
+
+  // Check stop signal
+  if (isStopSignal(text)) {
+    await slackSend(config.botToken, slackChannelId, "Soul stopped listening. Send a message via soul_send to restart.");
+    return;
+  }
+
+  // Log inbound message
+  rawDb
+    .prepare(
+      `INSERT INTO soul_messages (channel_id, direction, content, metadata, status)
+       VALUES (?, 'inbound', ?, ?, 'received')`
+    )
+    .run(
+      channel.id,
+      text,
+      JSON.stringify({ from: userId, slackChannelId })
+    );
+
+  // Process with Soul's brain
+  let reply: string;
+  try {
+    const { runAgentLoop } = await import("./agent-loop.js");
+
+    // Build conversation history
+    let conversationHistory: { role: string; content: string }[] = [];
+    try {
+      const recentMsgs = rawDb
+        .prepare(
+          `SELECT direction, content FROM soul_messages
+           WHERE channel_id = ? AND content IS NOT NULL AND content != ''
+           ORDER BY created_at DESC LIMIT 20`
+        )
+        .all(channel.id) as any[];
+      conversationHistory = recentMsgs.reverse().map((m: any) => ({
+        role: m.direction === "inbound" ? "user" : "assistant",
+        content: m.content,
+      }));
+    } catch { /* ok */ }
+
+    const result = await runAgentLoop(text, {
+      systemPrompt: `You are Soul v${SOUL_VERSION}, an AI companion responding via Slack to user ${userId}.
+RULES:
+1. When user writes in Thai → ALWAYS reply in Thai. NEVER switch to English.
+2. Keep responses concise (1-3 paragraphs max).
+3. You have 308 tools — you CAN read files, manage things, search, remember, etc. NEVER say "ทำไม่ได้".
+4. NEVER output <think> tags, internal reasoning, or duplicate responses.
+5. Send ONE reply only. Do not repeat yourself.
+6. Use Slack-friendly formatting (bold with *text*, code with \`code\`).`,
+      history: conversationHistory as any[],
+      maxIterations: 5,
+    });
+    reply = result.reply || "Sorry, I couldn't process that.";
+  } catch (err: any) {
+    reply = `Error: ${err.message?.substring(0, 100) || "unknown"}`;
+  }
+
+  // Strip <think>...</think> tags
+  reply = reply.replace(/<think>[\s\S]*?<\/think>\s*/g, "").trim();
+  if (!reply) reply = "Got it.";
+
+  // Send reply
+  const status = await slackSend(config.botToken, slackChannelId, reply);
+
+  // Log outbound
+  rawDb
+    .prepare(
+      `INSERT INTO soul_messages (channel_id, direction, content, metadata, status)
+       VALUES (?, 'outbound', ?, ?, ?)`
+    )
+    .run(
+      channel.id,
+      reply,
+      JSON.stringify({ slackChannelId, inReplyToUser: userId }),
+      status
+    );
+
+  await remember({
+    content: `[Slack] User ${userId}: "${text.substring(0, 80)}" → Soul: "${reply.substring(0, 80)}"`,
+    type: "conversation",
+    tags: ["slack", "chat", channel.name],
+    source: "slack-webhook",
+  });
+}
+
+// ============================================
+// DISCORD — Inbound interactions webhook + outbound via Bot API
+// ============================================
+
+/** Send a message via Discord Bot API */
+async function discordSend(botToken: string, channelId: string, content: string): Promise<string> {
+  try {
+    const response = await fetch(
+      `https://discord.com/api/v10/channels/${channelId}/messages`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bot ${botToken}`,
+        },
+        body: JSON.stringify({ content }),
+        signal: AbortSignal.timeout(10000),
+      }
+    );
+    return response.ok ? "delivered" : "failed";
+  } catch (e: any) {
+    console.error(`[Discord] Send failed: ${e.message}`);
+    return "failed";
+  }
+}
+
+/**
+ * Auto-setup Discord — give a bot token + channel/guild, Soul configures everything:
+ * 1. Validate the token with /users/@me
+ * 2. Register the channel
+ * 3. Send a welcome message
+ */
+export async function discordAutoSetup(botToken: string, channelId: string, guildId?: string, channelName?: string): Promise<{
+  success: boolean;
+  botName: string;
+  botUsername: string;
+  channelName: string;
+  message: string;
+}> {
+  // 1. Validate token
+  let botName = "Soul Bot";
+  let botUsername = "soul_bot";
+  try {
+    const meResp = await fetch("https://discord.com/api/v10/users/@me", {
+      method: "GET",
+      headers: { Authorization: `Bot ${botToken}` },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!meResp.ok) {
+      return { success: false, botName, botUsername, channelName: "", message: `Discord auth failed (${meResp.status}). Check your bot token.` };
+    }
+    const me = (await meResp.json()) as any;
+    botName = me.global_name || me.username || "Soul Bot";
+    botUsername = me.username || "soul_bot";
+  } catch (e: any) {
+    return { success: false, botName, botUsername, channelName: "", message: `Discord auth failed: ${e.message}` };
+  }
+
+  const name = channelName || `discord-${botUsername}`;
+
+  // 2. Register channel
+  await addChannel({
+    name,
+    channelType: "discord",
+    config: { botToken, channelId, guildId: guildId || "", botName, botUsername },
+  });
+
+  // 3. Remember
+  await remember({
+    content: `[Discord] Bot "${botName}" (@${botUsername}) connected as channel "${name}". ChannelId: ${channelId}`,
+    type: "knowledge",
+    tags: ["discord", "setup", "channel"],
+    source: "channels-engine",
+  });
+
+  // 4. Send welcome message
+  const sendStatus = await discordSend(botToken, channelId, `Soul connected to Discord! I'm now listening on this channel.`);
+
+  return {
+    success: true,
+    botName,
+    botUsername,
+    channelName: name,
+    message: sendStatus === "delivered"
+      ? `Bot "${botName}" (@${botUsername}) connected as channel "${name}". Welcome message sent. Set up the /api/discord/interactions webhook in your Discord app to receive inbound messages.`
+      : `Bot "${botName}" (@${botUsername}) connected as channel "${name}". Warning: welcome message failed — check bot permissions.`,
+  };
+}
+
+/**
+ * Handle incoming Discord interactions payload (from /api/discord/interactions webhook)
+ * Returns a response body to send back to Discord.
+ */
+export async function handleDiscordInteraction(payload: any): Promise<{
+  statusCode: number;
+  body: any;
+}> {
+  // PING — Discord verification (type 1)
+  if (payload.type === 1) {
+    return { statusCode: 200, body: { type: 1 } };
+  }
+
+  // APPLICATION_COMMAND (type 2) — slash commands
+  if (payload.type === 2) {
+    const commandName = payload.data?.name || "";
+    const userId = payload.member?.user?.id || payload.user?.id || "unknown";
+    const userName = payload.member?.user?.username || payload.user?.username || "User";
+    const discordChannelId = payload.channel_id || "";
+
+    // Extract the text input from command options
+    let text = "";
+    if (payload.data?.options?.length > 0) {
+      const msgOption = payload.data.options.find((o: any) => o.name === "message" || o.name === "text" || o.name === "input");
+      text = msgOption?.value || payload.data.options[0]?.value || "";
+    }
+
+    if (!text) {
+      return {
+        statusCode: 200,
+        body: {
+          type: 4, // CHANNEL_MESSAGE_WITH_SOURCE
+          data: { content: "Please provide a message. Usage: /soul message:your question here" },
+        },
+      };
+    }
+
+    // Acknowledge immediately with deferred response (type 5)
+    // Then follow up with the real reply asynchronously
+    processDiscordCommand(discordChannelId, text, userId, userName, payload.token).catch((err) => {
+      console.error("[Discord] Command processing error:", err.message);
+    });
+
+    return {
+      statusCode: 200,
+      body: {
+        type: 5, // DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE
+        data: { content: "Soul is thinking..." },
+      },
+    };
+  }
+
+  // MESSAGE_COMPONENT (type 3) — button/select interactions
+  // Not implemented yet, acknowledge
+  if (payload.type === 3) {
+    return {
+      statusCode: 200,
+      body: { type: 6 }, // DEFERRED_UPDATE_MESSAGE
+    };
+  }
+
+  return { statusCode: 200, body: { type: 1 } };
+}
+
+/**
+ * Process a Discord slash command — run agent loop, send follow-up
+ */
+async function processDiscordCommand(
+  discordChannelId: string,
+  text: string,
+  userId: string,
+  userName: string,
+  interactionToken: string
+) {
+  // Find the matching Soul channel
+  ensureChannelTables();
+  const rawDb = getRawDb();
+  const channels = rawDb
+    .prepare("SELECT * FROM soul_channels WHERE channel_type = 'discord' AND is_active = 1")
+    .all() as any[];
+
+  let matchedChannel: any = null;
+  let config: any = {};
+
+  for (const ch of channels) {
+    const cfg = JSON.parse(ch.config || "{}");
+    if (cfg.channelId === discordChannelId) {
+      matchedChannel = ch;
+      config = cfg;
+      break;
+    }
+  }
+
+  // If no channel matches, use the first active Discord channel for sending
+  if (!matchedChannel && channels.length > 0) {
+    matchedChannel = channels[0];
+    config = JSON.parse(matchedChannel.config || "{}");
+  }
+
+  const channelId = matchedChannel?.id || 0;
+
+  // Log inbound
+  rawDb
+    .prepare(
+      `INSERT INTO soul_messages (channel_id, direction, content, metadata, status)
+       VALUES (?, 'inbound', ?, ?, 'received')`
+    )
+    .run(
+      channelId,
+      text,
+      JSON.stringify({ from: userName, userId, discordChannelId })
+    );
+
+  // Process with Soul's brain
+  let reply: string;
+  try {
+    const { runAgentLoop } = await import("./agent-loop.js");
+
+    let conversationHistory: { role: string; content: string }[] = [];
+    if (channelId) {
+      try {
+        const recentMsgs = rawDb
+          .prepare(
+            `SELECT direction, content FROM soul_messages
+             WHERE channel_id = ? AND content IS NOT NULL AND content != ''
+             ORDER BY created_at DESC LIMIT 20`
+          )
+          .all(channelId) as any[];
+        conversationHistory = recentMsgs.reverse().map((m: any) => ({
+          role: m.direction === "inbound" ? "user" : "assistant",
+          content: m.content,
+        }));
+      } catch { /* ok */ }
+    }
+
+    const result = await runAgentLoop(text, {
+      systemPrompt: `You are Soul v${SOUL_VERSION}, an AI companion responding via Discord to ${userName}.
+RULES:
+1. When user writes in Thai → ALWAYS reply in Thai. NEVER switch to English.
+2. Keep responses concise (1-3 paragraphs max). Discord has a 2000 char limit per message.
+3. You have 308 tools — you CAN read files, manage things, search, remember, etc. NEVER say "ทำไม่ได้".
+4. NEVER output <think> tags, internal reasoning, or duplicate responses.
+5. Send ONE reply only. Do not repeat yourself.
+6. Use Discord-friendly formatting (**bold**, \`code\`, \`\`\`codeblocks\`\`\`).`,
+      history: conversationHistory as any[],
+      maxIterations: 5,
+    });
+    reply = result.reply || "Sorry, I couldn't process that.";
+  } catch (err: any) {
+    reply = `Error: ${err.message?.substring(0, 100) || "unknown"}`;
+  }
+
+  // Strip <think>...</think> tags
+  reply = reply.replace(/<think>[\s\S]*?<\/think>\s*/g, "").trim();
+  if (!reply) reply = "Got it.";
+
+  // Truncate to Discord's 2000 char limit
+  if (reply.length > 2000) {
+    reply = reply.substring(0, 1997) + "...";
+  }
+
+  // Send follow-up response to the interaction
+  try {
+    // Get app ID from the channel config or fetch it
+    let appId = config.applicationId || "";
+    if (!appId && config.botToken) {
+      try {
+        const meResp = await fetch("https://discord.com/api/v10/users/@me", {
+          method: "GET",
+          headers: { Authorization: `Bot ${config.botToken}` },
+          signal: AbortSignal.timeout(10000),
+        });
+        const me = (await meResp.json()) as any;
+        appId = me.id || "";
+        // Cache it in config
+        if (appId && matchedChannel) {
+          config.applicationId = appId;
+          rawDb
+            .prepare("UPDATE soul_channels SET config = ? WHERE id = ?")
+            .run(JSON.stringify(config), matchedChannel.id);
+        }
+      } catch { /* ok */ }
+    }
+
+    if (appId) {
+      await fetch(
+        `https://discord.com/api/v10/webhooks/${appId}/${interactionToken}/messages/@original`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ content: reply }),
+          signal: AbortSignal.timeout(10000),
+        }
+      );
+    }
+  } catch (e: any) {
+    console.error("[Discord] Follow-up failed:", e.message);
+    // Fallback: send as regular message
+    if (config.botToken && discordChannelId) {
+      await discordSend(config.botToken, discordChannelId, reply);
+    }
+  }
+
+  // Log outbound
+  rawDb
+    .prepare(
+      `INSERT INTO soul_messages (channel_id, direction, content, metadata, status)
+       VALUES (?, 'outbound', ?, ?, 'delivered')`
+    )
+    .run(
+      channelId,
+      reply,
+      JSON.stringify({ discordChannelId, inReplyToUser: userId })
+    );
+
+  await remember({
+    content: `[Discord] ${userName}: "${text.substring(0, 80)}" → Soul: "${reply.substring(0, 80)}"`,
+    type: "conversation",
+    tags: ["discord", "chat", matchedChannel?.name || "discord"],
+    source: "discord-webhook",
+  });
+}
+
+/**
+ * Handle incoming Discord gateway-style message events
+ * This is for the POST /api/discord/message endpoint (simpler alternative to interactions)
+ */
+export async function handleDiscordMessage(payload: {
+  content: string;
+  author: string;
+  channelId: string;
+}): Promise<{ reply: string; status: string }> {
+  const { content: text, author, channelId: discordChannelId } = payload;
+
+  if (!text?.trim()) {
+    return { reply: "", status: "empty" };
+  }
+
+  // Find matching channel
+  ensureChannelTables();
+  const rawDb = getRawDb();
+  const channels = rawDb
+    .prepare("SELECT * FROM soul_channels WHERE channel_type = 'discord' AND is_active = 1")
+    .all() as any[];
+
+  let matchedChannel: any = null;
+  let config: any = {};
+
+  for (const ch of channels) {
+    const cfg = JSON.parse(ch.config || "{}");
+    if (cfg.channelId === discordChannelId) {
+      matchedChannel = ch;
+      config = cfg;
+      break;
+    }
+  }
+
+  if (!matchedChannel) {
+    return { reply: "No Discord channel configured for this channel ID.", status: "no_channel" };
+  }
+
+  if (isStopSignal(text)) {
+    return { reply: "Soul stopped listening.", status: "stopped" };
+  }
+
+  // Log inbound
+  rawDb
+    .prepare(
+      `INSERT INTO soul_messages (channel_id, direction, content, metadata, status)
+       VALUES (?, 'inbound', ?, ?, 'received')`
+    )
+    .run(matchedChannel.id, text, JSON.stringify({ from: author, discordChannelId }));
+
+  // Process with agent loop
+  let reply: string;
+  try {
+    const { runAgentLoop } = await import("./agent-loop.js");
+
+    let conversationHistory: { role: string; content: string }[] = [];
+    try {
+      const recentMsgs = rawDb
+        .prepare(
+          `SELECT direction, content FROM soul_messages
+           WHERE channel_id = ? AND content IS NOT NULL AND content != ''
+           ORDER BY created_at DESC LIMIT 20`
+        )
+        .all(matchedChannel.id) as any[];
+      conversationHistory = recentMsgs.reverse().map((m: any) => ({
+        role: m.direction === "inbound" ? "user" : "assistant",
+        content: m.content,
+      }));
+    } catch { /* ok */ }
+
+    const result = await runAgentLoop(text, {
+      systemPrompt: `You are Soul v${SOUL_VERSION}, an AI companion responding via Discord to ${author}.
+RULES:
+1. When user writes in Thai → ALWAYS reply in Thai. NEVER switch to English.
+2. Keep responses concise (1-3 paragraphs max). Discord has a 2000 char limit.
+3. You have 308 tools. NEVER say "ทำไม่ได้".
+4. NEVER output <think> tags. Send ONE reply only.`,
+      history: conversationHistory as any[],
+      maxIterations: 5,
+    });
+    reply = result.reply || "Sorry, I couldn't process that.";
+  } catch (err: any) {
+    reply = `Error: ${err.message?.substring(0, 100) || "unknown"}`;
+  }
+
+  reply = reply.replace(/<think>[\s\S]*?<\/think>\s*/g, "").trim();
+  if (!reply) reply = "Got it.";
+  if (reply.length > 2000) reply = reply.substring(0, 1997) + "...";
+
+  // Send reply via Discord API
+  const status = config.botToken
+    ? await discordSend(config.botToken, discordChannelId, reply)
+    : "no_token";
+
+  // Log outbound
+  rawDb
+    .prepare(
+      `INSERT INTO soul_messages (channel_id, direction, content, metadata, status)
+       VALUES (?, 'outbound', ?, ?, ?)`
+    )
+    .run(matchedChannel.id, reply, JSON.stringify({ discordChannelId, inReplyTo: author }), status);
+
+  await remember({
+    content: `[Discord] ${author}: "${text.substring(0, 80)}" → Soul: "${reply.substring(0, 80)}"`,
+    type: "conversation",
+    tags: ["discord", "chat", matchedChannel.name],
+    source: "discord-message",
+  });
+
+  return { reply, status };
 }
 
 // ============================================

@@ -59,30 +59,42 @@ export function registerSkillExecutorTools(server: McpServer) {
 
   server.tool(
     "soul_skill_approve",
-    "Approve an executable skill for use — only master can approve. This is the safety gate.",
+    "Approve an executable skill for use — only master can approve. Requires master passphrase. This is the safety gate.",
     {
       skillId: z.number().describe("Skill ID to approve"),
+      passphrase: z.string().describe("Master passphrase for verification"),
     },
-    async ({ skillId }) => {
-      const skill = await approveSkill(skillId);
-      if (!skill) {
+    async ({ skillId, passphrase }) => {
+      try {
+        const skill = await approveSkill(skillId, passphrase);
+        if (!skill) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `Skill #${skillId} not found.`,
+              },
+            ],
+          };
+        }
         return {
           content: [
             {
               type: "text" as const,
-              text: `Skill #${skillId} not found.`,
+              text: `Skill "${skill.name}" APPROVED by master.\nIt can now be executed. Use with confidence.`,
+            },
+          ],
+        };
+      } catch (error: any) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `APPROVAL DENIED: ${error.message}`,
             },
           ],
         };
       }
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: `Skill "${skill.name}" APPROVED by master.\nIt can now be executed. Use with confidence.`,
-          },
-        ],
-      };
     }
   );
 

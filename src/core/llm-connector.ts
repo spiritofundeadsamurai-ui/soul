@@ -22,6 +22,7 @@
  */
 
 import { getRawDb } from "../db/index.js";
+import { encryptSecret, safeDecryptSecret, redactSensitiveData } from "../core/security.js";
 
 // ─── Types ───
 
@@ -253,15 +254,17 @@ export function addProvider(input: {
     "SELECT id FROM soul_llm_config WHERE provider_id = ? AND model_id = ?"
   ).get(input.providerId, input.modelId) as any;
 
+  const encryptedKey = input.apiKey ? encryptSecret(input.apiKey) : "";
+
   if (existing) {
     rawDb.prepare(
       `UPDATE soul_llm_config SET api_key = ?, base_url = ?, is_default = ?, is_active = 1, updated_at = datetime('now') WHERE id = ?`
-    ).run(input.apiKey || "", input.customBaseUrl || preset.baseUrl, input.isDefault ? 1 : 0, existing.id);
+    ).run(encryptedKey, input.customBaseUrl || preset.baseUrl, input.isDefault ? 1 : 0, existing.id);
   } else {
     rawDb.prepare(
       `INSERT INTO soul_llm_config (provider_id, provider_name, provider_type, base_url, api_key, model_id, model_name, is_default)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(input.providerId, preset.name, preset.type, input.customBaseUrl || preset.baseUrl, input.apiKey || "", input.modelId, model.displayName, input.isDefault ? 1 : 0);
+    ).run(input.providerId, preset.name, preset.type, input.customBaseUrl || preset.baseUrl, encryptedKey, input.modelId, model.displayName, input.isDefault ? 1 : 0);
   }
 
   return { success: true, message: `${preset.name} / ${model.displayName} configured${input.isDefault ? " (default)" : ""}.` };
@@ -288,7 +291,7 @@ export function getDefaultConfig(): { providerId: string; providerType: string; 
     providerId: row.provider_id,
     providerType: row.provider_type,
     baseUrl: row.base_url,
-    apiKey: row.api_key,
+    apiKey: safeDecryptSecret(row.api_key),
     modelId: row.model_id,
     modelName: row.model_name,
   };
@@ -344,6 +347,9 @@ export async function chat(
     config = rawDb.prepare(
       "SELECT * FROM soul_llm_config WHERE provider_id = ? AND model_id = ? AND is_active = 1"
     ).get(options.providerId, options.modelId) as any;
+    if (config) {
+      config.api_key = safeDecryptSecret(config.api_key);
+    }
   }
   if (!config) {
     const def = getDefaultConfig();
@@ -400,6 +406,9 @@ export async function chatStream(
     config = rawDb.prepare(
       "SELECT * FROM soul_llm_config WHERE provider_id = ? AND model_id = ? AND is_active = 1"
     ).get(options.providerId, options.modelId) as any;
+    if (config) {
+      config.api_key = safeDecryptSecret(config.api_key);
+    }
   }
   if (!config) {
     const def = getDefaultConfig();
@@ -470,7 +479,8 @@ async function chatStreamOpenAI(
   const res = await fetch(url, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) });
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`${config.provider_id} stream error (${res.status}): ${text.substring(0, 300)}`);
+    const safeText = redactSensitiveData(text.substring(0, 300));
+    throw new Error(`${config.provider_id} stream error (${res.status}): ${safeText}`);
   }
 
   const contentParts: string[] = [];
@@ -576,7 +586,8 @@ async function chatOllama(
 
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`Ollama error (${res.status}): ${text}`);
+    const safeText = redactSensitiveData(text.substring(0, 300));
+    throw new Error(`Ollama error (${res.status}): ${safeText}`);
   }
 
   const data = await res.json() as any;
@@ -615,7 +626,8 @@ async function chatOpenAI(
 
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`${config.provider_id} error (${res.status}): ${text.substring(0, 300)}`);
+    const safeText = redactSensitiveData(text.substring(0, 300));
+    throw new Error(`${config.provider_id} error (${res.status}): ${safeText}`);
   }
 
   const data = await res.json() as any;
@@ -682,7 +694,8 @@ async function chatAnthropic(
 
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`Anthropic error (${res.status}): ${text.substring(0, 300)}`);
+    const safeText = redactSensitiveData(text.substring(0, 300));
+    throw new Error(`Anthropic error (${res.status}): ${safeText}`);
   }
 
   const data = await res.json() as any;
@@ -762,7 +775,8 @@ async function chatGemini(
 
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`Gemini error (${res.status}): ${text.substring(0, 300)}`);
+    const safeText = redactSensitiveData(text.substring(0, 300));
+    throw new Error(`Gemini error (${res.status}): ${safeText}`);
   }
 
   const data = await res.json() as any;
@@ -897,10 +911,11 @@ export function addCustomProvider(input: {
     rawDb.prepare("UPDATE soul_llm_config SET is_default = 0").run();
   }
 
+  const encryptedCustomKey = input.apiKey ? encryptSecret(input.apiKey) : "";
   rawDb.prepare(
     `INSERT INTO soul_llm_config (provider_id, provider_name, provider_type, base_url, api_key, model_id, model_name, is_default)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(input.id, input.name, input.type, input.baseUrl, input.apiKey, input.modelId, input.modelName, input.isDefault ? 1 : 0);
+  ).run(input.id, input.name, input.type, input.baseUrl, encryptedCustomKey, input.modelId, input.modelName, input.isDefault ? 1 : 0);
 
   // Add to presets dynamically for this session
   if (!PROVIDER_PRESETS[input.id]) {

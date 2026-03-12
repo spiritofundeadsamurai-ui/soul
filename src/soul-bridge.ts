@@ -25,6 +25,7 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { execSync } from "child_process";
 
 const HOME = os.homedir();
 const HOOK_MARKER = "__soul_auto_learn__";
@@ -68,7 +69,6 @@ function findSoulLearn(): string {
 
   // Try npm prefix
   try {
-    const { execSync } = require("child_process");
     const npmPrefix = execSync("npm prefix -g", { encoding: "utf-8" }).trim();
     const nodeModulesPath = path.join(npmPrefix, "node_modules", "soul-ai", "dist", "soul-learn.js");
     if (fs.existsSync(nodeModulesPath)) {

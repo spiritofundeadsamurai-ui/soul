@@ -9,6 +9,8 @@ import {
   startTelegramPolling,
   stopTelegramPolling,
   getTelegramPollingStatus,
+  slackAutoSetup,
+  discordAutoSetup,
   selfUpdate,
   checkForUpdate,
 } from "../core/channels.js";
@@ -55,32 +57,83 @@ export function registerChannelTools(server: McpServer) {
           );
         }
 
+        // ─── Slack ───
+        if (svc === "slack") {
+          const botToken = creds.botToken || creds.bot_token || creds.token;
+          const channelId = creds.channelId || creds.channel_id || creds.channel;
+          if (!botToken) {
+            return text("Slack needs a botToken (Bot User OAuth Token starting with xoxb-).\nGet one: api.slack.com → Your Apps → OAuth & Permissions → Bot User OAuth Token\nUsage: {\"botToken\": \"xoxb-...\", \"channelId\": \"C01234567\"}");
+          }
+          if (!channelId) {
+            return text("Slack needs a channelId.\nRight-click a channel → View channel details → copy the Channel ID at the bottom.\nUsage: {\"botToken\": \"xoxb-...\", \"channelId\": \"C01234567\"}");
+          }
+          const result = await slackAutoSetup(botToken, channelId, name);
+          if (!result.success) {
+            return text(`Slack setup failed: ${result.message}`);
+          }
+          return text(
+            `✅ Slack connected!\n\n` +
+            `Bot: ${result.botName}\n` +
+            `Team: ${result.teamName}\n` +
+            `Channel: "${result.channelName}"\n\n` +
+            `To receive inbound messages, add this URL as your Slack Events webhook:\n` +
+            `  POST http://<your-soul-host>:47779/api/slack/events\n\n` +
+            `Required Slack app scopes: chat:write, channels:history, app_mentions:read\n` +
+            `Subscribe to bot events: message.channels, message.im`
+          );
+        }
+
         // ─── Discord ───
         if (svc === "discord") {
-          const webhookUrl = creds.webhookUrl || creds.webhook_url || creds.url;
-          if (!webhookUrl) {
-            return text("Discord needs a webhookUrl.\nGet one: Server Settings → Integrations → Webhooks → Copy URL\nUsage: {\"webhookUrl\": \"https://discord.com/api/webhooks/...\"}");
-          }
-          const channelName = name || "discord";
-          await addChannel({
-            name: channelName,
-            channelType: "discord",
-            config: { webhookUrl, ...creds },
-          });
-          // Test the webhook
-          try {
-            const testResp = await fetch(webhookUrl, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ content: "✨ Soul connected to Discord!" }),
-              signal: AbortSignal.timeout(10000),
-            });
+          const botToken = creds.botToken || creds.bot_token;
+          const channelId = creds.channelId || creds.channel_id || creds.channel;
+          const guildId = creds.guildId || creds.guild_id || creds.guild;
+
+          // If botToken is provided, use full bot integration
+          if (botToken && channelId) {
+            const result = await discordAutoSetup(botToken, channelId, guildId, name);
+            if (!result.success) {
+              return text(`Discord setup failed: ${result.message}`);
+            }
             return text(
-              `✅ Discord connected!\n\nChannel: "${channelName}"\nWebhook: ${testResp.ok ? "Working" : "Failed to send test message"}\n\nUse soul_send("${channelName}", "message") to send.`
+              `✅ Discord connected!\n\n` +
+              `Bot: ${result.botName} (@${result.botUsername})\n` +
+              `Channel: "${result.channelName}"\n\n` +
+              `To receive inbound messages, add this URL as your Discord Interactions endpoint:\n` +
+              `  POST http://<your-soul-host>:47779/api/discord/interactions\n\n` +
+              `Or for simpler bot integration, POST messages to:\n` +
+              `  POST http://<your-soul-host>:47779/api/discord/message\n` +
+              `  Body: {"content":"message","author":"user","channelId":"${channelId}"}`
             );
-          } catch {
-            return text(`✅ Discord channel "${channelName}" saved, but test message failed. Check the webhook URL.`);
           }
+
+          // Fallback to webhook-only (outbound only)
+          const webhookUrl = creds.webhookUrl || creds.webhook_url || creds.url;
+          if (!webhookUrl && !botToken) {
+            return text("Discord needs either:\n1. Bot token + channel ID (full bidirectional): {\"botToken\": \"...\", \"channelId\": \"...\"}\n2. Webhook URL (outbound only): {\"webhookUrl\": \"https://discord.com/api/webhooks/...\"}");
+          }
+          if (webhookUrl) {
+            const channelName = name || "discord";
+            await addChannel({
+              name: channelName,
+              channelType: "discord",
+              config: { webhookUrl, ...creds },
+            });
+            try {
+              const testResp = await fetch(webhookUrl, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ content: "Soul connected to Discord!" }),
+                signal: AbortSignal.timeout(10000),
+              });
+              return text(
+                `✅ Discord connected (webhook-only, outbound)!\n\nChannel: "${channelName}"\nWebhook: ${testResp.ok ? "Working" : "Failed to send test message"}\n\nUse soul_send("${channelName}", "message") to send.\nFor bidirectional, use botToken + channelId instead.`
+              );
+            } catch {
+              return text(`✅ Discord channel "${channelName}" saved, but test message failed. Check the webhook URL.`);
+            }
+          }
+          return text("Discord needs a channelId with the botToken.\nUsage: {\"botToken\": \"...\", \"channelId\": \"...\"}");
         }
 
         // ─── Webhook (generic) ───
@@ -239,7 +292,7 @@ export function registerChannelTools(server: McpServer) {
     {
       name: z.string().describe("Channel name (e.g., 'my-telegram', 'work-slack')"),
       channelType: z
-        .enum(["telegram", "discord", "webhook", "line", "whatsapp", "custom"])
+        .enum(["telegram", "discord", "slack", "webhook", "line", "whatsapp", "custom"])
         .describe("Channel type"),
       config: z
         .string()
