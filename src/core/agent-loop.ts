@@ -540,58 +540,126 @@ async function tryAutoAction(
   if (isMt5) {
     try {
       const mt5 = await import("./mt5-engine.js");
-      await mt5.connectMt5();
 
-      // Determine what action to take based on message content
+      // Step 1: Try to connect — this is the real proof MT5 is alive
+      let connected = false;
+      let connectError = "";
+      try {
+        await mt5.connectMt5();
+        connected = true;
+      } catch (e: any) {
+        connectError = e.message || "ไม่ทราบสาเหตุ";
+      }
+
+      // Step 2: Verify connection by getting real price
+      let priceData: any = null;
+      if (connected) {
+        try {
+          priceData = await mt5.getPrice("XAUUSD");
+        } catch { /* price fetch failed — MT5 might not be truly connected */ }
+      }
+
+      // If no price data, MT5 is NOT really working
+      if (!connected || !priceData || !priceData.bid) {
+        const reason = !connected
+          ? `เชื่อมต่อไม่ได้: ${connectError}`
+          : "เชื่อมต่อได้แต่ไม่พบข้อมูลราคา";
+        return {
+          reply: `⚠️ MetaTrader 5 ไม่พร้อมใช้งาน\n\n` +
+            `สาเหตุ: ${reason}\n\n` +
+            `สิ่งที่ต้องตรวจสอบ:\n` +
+            `1. เปิดโปรแกรม MetaTrader 5 แล้วหรือยัง?\n` +
+            `2. Login เข้าบัญชีเทรดแล้วหรือยัง?\n` +
+            `3. Python + MetaTrader5 package ติดตั้งแล้วหรือยัง?\n` +
+            `   (pip install MetaTrader5)\n\n` +
+            `เปิด MT5 แล้วส่งข้อความมาใหม่ได้เลยครับ`,
+          toolsUsed: ["soul_mt5_connect"],
+          iterations: 1,
+          totalTokens: 0,
+          model: "auto-action",
+          provider: "soul-mt5",
+          confidence: { overall: 50, label: "medium", emoji: "🟡" },
+          responseMs: Date.now() - startTimeMs,
+        };
+      }
+
+      // MT5 is truly alive — we have real price data
+      const toolsUsed: string[] = ["soul_mt5_price"];
+      const parts: string[] = [];
+
+      // Always show current price as proof
+      const spread = ((priceData.ask - priceData.bid) * 10).toFixed(1);
+      parts.push(`💰 ราคาทองคำ (XAUUSD) ตอนนี้`);
+      parts.push(`   Bid: ${priceData.bid} | Ask: ${priceData.ask}`);
+      parts.push(`   Spread: ${spread} pips`);
+      parts.push(`   เวลา: ${new Date().toLocaleTimeString("th-TH")}`);
+
+      // Determine what actions user wants
       const wantMonitor = /เฝ้า|ติดตาม|monitor|ทุก.*นาที|every.*min|แจ้งเตือน|alert/i.test(lower);
       const wantMultiTF = /หลาย.*เฟรม|multi.*time|ความสัมพัน|correlation|เฟรมเวลา|timeframe|M15|H1|H4|D1/i.test(lower);
       const wantAnalyze = /วิเคราะห์|analyze|เทคนิค|technical|indicator|RSI|MACD|SMA|EMA/i.test(lower);
-      const wantPrice = /ราคา|price|เท่าไหร่|how much|ตอนนี้/i.test(lower);
       const wantPositions = /ออเดอร์|position|พอร์ต|portfolio|กำไร|ขาดทุน/i.test(lower);
-      const wantStats = /สถิติ|stats|statistics|ผลงาน|performance|win.*rate/i.test(lower);
-
-      const toolsUsed: string[] = [];
-      const parts: string[] = [];
-
-      // Get current price first (almost always useful)
-      if (wantPrice || wantAnalyze || wantMonitor || wantMultiTF) {
-        try {
-          const price = await mt5.getPrice("XAUUSD");
-          if (price) {
-            parts.push(`💰 XAUUSD: Bid ${price.bid} / Ask ${price.ask} | Spread: ${((price.ask - price.bid) * 10).toFixed(1)} pips`);
-            toolsUsed.push("soul_mt5_price");
-          }
-        } catch {}
-      }
+      const wantStats = /สถิติ|stats|statistics|ผลงาน|performance|win.*rate|เก็บสถิติ|หารูปแบบ/i.test(lower);
 
       // Multi-timeframe analysis
       if (wantMultiTF || wantAnalyze) {
         try {
-          const analysis = await mt5.multiTimeframeAnalysis("XAUUSD");
+          const analysis = await mt5.multiTimeframeAnalysis("XAUUSD") as any;
           if (analysis) {
-            parts.push(`\n📊 Multi-Timeframe Analysis:\n${JSON.stringify(analysis.correlation || analysis, null, 2).substring(0, 1500)}`);
+            const corr = analysis.correlation;
+            parts.push("");
+            parts.push("📊 วิเคราะห์หลายเฟรมเวลา:");
+            if (corr?.direction) parts.push(`   แนวโน้มรวม: ${corr.direction}`);
+            if (corr?.confidence) parts.push(`   ความเชื่อมั่น: ${(corr.confidence * 100).toFixed(0)}%`);
+            if (corr?.summary) parts.push(`   สรุป: ${corr.summary}`);
+            if (analysis.timeframes) {
+              for (const tfData of analysis.timeframes) {
+                const ind = tfData.indicators;
+                parts.push(`   ${tfData.timeframe}: RSI ${ind?.rsi14?.toFixed(1) || "N/A"} | SMA9 ${ind?.sma9?.toFixed(2) || "N/A"}`);
+              }
+            }
+            if (analysis.signals?.length > 0) {
+              parts.push("   สัญญาณ:");
+              for (const sig of analysis.signals.slice(0, 3)) {
+                parts.push(`   - ${sig.type || sig.action}: ${sig.reason || ""} (${sig.timeframe || ""})`);
+              }
+            }
             toolsUsed.push("soul_mt5_multi_analyze");
           }
         } catch (e: any) {
-          // Fallback to single analyze
           try {
             const single = await mt5.analyzeChart("XAUUSD", "H1");
-            parts.push(`\n📊 H1 Analysis:\n${JSON.stringify(single, null, 2).substring(0, 1000)}`);
-            toolsUsed.push("soul_mt5_analyze");
+            if (single) {
+              parts.push("");
+              parts.push("📊 วิเคราะห์ H1:");
+              parts.push(`   RSI: ${single.indicators.rsi14.toFixed(1)}`);
+              parts.push(`   SMA9: ${single.indicators.sma9.toFixed(2)} | SMA21: ${single.indicators.sma21.toFixed(2)}`);
+              parts.push(`   แนวรับ: ${single.indicators.support} | แนวต้าน: ${single.indicators.resistance}`);
+              if (single.signals?.length > 0) {
+                parts.push(`   สัญญาณ: ${single.signals.map((s: any) => s.type || s.action).join(", ")}`);
+              }
+              toolsUsed.push("soul_mt5_analyze");
+            }
           } catch {}
         }
       }
 
-      // Start monitoring if requested
+      // Start monitoring
       if (wantMonitor) {
         try {
           const intervalMatch = lower.match(/(\d+)\s*(?:นาที|min)/);
           const interval = intervalMatch ? parseInt(intervalMatch[1]) : 3;
           const monResult = await mt5.startSmartMonitor({ symbol: "XAUUSD", intervalSec: interval * 60 });
-          parts.push(`\n🔔 Smart Monitor: ${typeof monResult === 'string' ? monResult : JSON.stringify(monResult)}`);
+          parts.push("");
+          if (monResult?.success) {
+            parts.push(`🔔 เริ่มติดตามราคาทุก ${interval} นาทีแล้ว`);
+            parts.push(`   ระบบจะแจ้งเตือนเมื่อพบจุดเข้าที่น่าสนใจ`);
+          } else {
+            parts.push(`🔔 ${monResult?.message === "Monitor already running. Stop it first." ? "กำลังติดตามอยู่แล้วครับ (ทำงานอยู่)" : (monResult?.message || "เริ่มติดตามแล้ว")}`);
+          }
           toolsUsed.push("soul_mt5_smart_monitor");
         } catch (e: any) {
-          parts.push(`\n⚠️ Monitor: ${e.message}`);
+          parts.push(`\n⚠️ ไม่สามารถเริ่มติดตามได้: ${e.message}`);
         }
       }
 
@@ -599,7 +667,15 @@ async function tryAutoAction(
       if (wantPositions) {
         try {
           const positions = await mt5.getPositions("XAUUSD");
-          parts.push(`\n📋 Positions: ${JSON.stringify(positions).substring(0, 500)}`);
+          parts.push("");
+          if (Array.isArray(positions) && positions.length > 0) {
+            parts.push("📋 ออเดอร์ที่เปิดอยู่:");
+            for (const p of positions.slice(0, 5)) {
+              parts.push(`   ${p.type || "?"} ${p.volume || "?"} lot @ ${p.price_open || "?"} | กำไร: ${p.profit || 0}`);
+            }
+          } else {
+            parts.push("📋 ไม่มีออเดอร์เปิดอยู่ตอนนี้");
+          }
           toolsUsed.push("soul_mt5_positions");
         } catch {}
       }
@@ -607,42 +683,47 @@ async function tryAutoAction(
       // Strategy stats
       if (wantStats) {
         try {
-          const stats = mt5.getStrategyStats();
-          parts.push(`\n📈 Strategy Stats: ${JSON.stringify(stats).substring(0, 500)}`);
+          const stats = mt5.getStrategyStats() as any;
+          parts.push("");
+          parts.push("📈 สถิติกลยุทธ์:");
+          if (stats) {
+            if (stats.totalTrades !== undefined) parts.push(`   เทรดทั้งหมด: ${stats.totalTrades} ครั้ง`);
+            if (stats.winRate !== undefined) parts.push(`   อัตราชนะ: ${(stats.winRate * 100).toFixed(1)}%`);
+            if (stats.profitFactor !== undefined) parts.push(`   Profit Factor: ${stats.profitFactor.toFixed(2)}`);
+            if (stats.totalProfit !== undefined) parts.push(`   กำไรสุทธิ: ${stats.totalProfit.toFixed(2)}`);
+            if (Object.keys(stats).length === 0 || stats.totalTrades === 0) {
+              parts.push("   ยังไม่มีข้อมูลสถิติ (จะเริ่มเก็บเมื่อมีสัญญาณ)");
+            }
+          }
           toolsUsed.push("soul_mt5_strategy_stats");
         } catch {}
       }
 
-      if (parts.length > 0) {
-        // ALWAYS return MT5 data directly — don't rely on LLM
-        const dataContext = parts.join("\n");
-        return {
-          reply: dataContext,
-          toolsUsed,
-          iterations: 1,
-          totalTokens: 0,
-          model: "auto-action",
-          provider: "soul-mt5",
-          confidence: { overall: 95, label: "very high", emoji: "🟢" },
-          responseMs: Date.now() - startTimeMs,
-        };
-      }
-      // MT5 connected but returned no data — still report it, don't fall through to LLM
+      // Summary
+      parts.push("");
+      parts.push("✅ สถานะ: MT5 เชื่อมต่อแล้ว — ข้อมูลเป็น real-time");
+
       return {
-        reply: "⚠️ MT5 เชื่อมต่อสำเร็จแต่ไม่พบข้อมูลราคา กรุณาตรวจสอบว่า XAUUSD มีอยู่ในบัญชีเทรดของคุณ",
-        toolsUsed: ["soul_mt5_connect"],
+        reply: parts.join("\n"),
+        toolsUsed,
         iterations: 1,
         totalTokens: 0,
         model: "auto-action",
         provider: "soul-mt5",
-        confidence: { overall: 50, label: "medium", emoji: "🟡" },
+        confidence: { overall: 95, label: "very high", emoji: "🟢" },
         responseMs: Date.now() - startTimeMs,
       };
     } catch (err: any) {
       console.error("[auto-action:mt5]", err.message);
-      // MT5 failed — tell user clearly instead of falling through to LLM
       return {
-        reply: `⚠️ MT5 ไม่สามารถเชื่อมต่อได้: ${err.message}\n\nกรุณาตรวจสอบ:\n1. MetaTrader 5 เปิดอยู่หรือไม่\n2. Python + MetaTrader5 package ติดตั้งแล้วหรือไม่\n3. ใช้คำสั่ง soul_mt5_connect เพื่อลองเชื่อมต่อใหม่`,
+        reply: `⚠️ MetaTrader 5 ไม่พร้อมใช้งาน\n\n` +
+          `ข้อผิดพลาด: ${err.message}\n\n` +
+          `สิ่งที่ต้องตรวจสอบ:\n` +
+          `1. เปิดโปรแกรม MetaTrader 5 แล้วหรือยัง?\n` +
+          `2. Login เข้าบัญชีเทรดแล้วหรือยัง?\n` +
+          `3. Python + MetaTrader5 package ติดตั้งแล้วหรือยัง?\n` +
+          `   (pip install MetaTrader5)\n\n` +
+          `เปิด MT5 แล้วส่งข้อความมาใหม่ได้เลยครับ`,
         toolsUsed: ["soul_mt5_connect"],
         iterations: 1,
         totalTokens: 0,
