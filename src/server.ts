@@ -549,6 +549,69 @@ app.get("/api/brain-hub", authMiddleware(), async (c) => {
   return c.json({ ...stats, packs });
 });
 
+// === Soul Collective Network — P2P Sync Endpoints ===
+// These endpoints are called by OTHER Soul instances to sync knowledge
+
+// Public: Other Souls call this to send us knowledge
+app.post("/api/network/receive", async (c) => {
+  try {
+    const { handleReceiveRequest } = await import("./core/soul-network.js");
+    const body = await c.req.json();
+    const result = await handleReceiveRequest(body);
+    return c.json(result);
+  } catch (err: any) {
+    return c.json({ accepted: 0, rejected: 0, message: "Invalid request" }, 400);
+  }
+});
+
+// Public: Other Souls call this to get our shareable knowledge
+app.get("/api/network/share", async (c) => {
+  try {
+    const { handleShareRequest } = await import("./core/soul-network.js");
+    return c.json(handleShareRequest());
+  } catch {
+    return c.json({ knowledge: [] });
+  }
+});
+
+// Public: Hub/peers call this to register
+app.post("/api/network/register", async (c) => {
+  try {
+    const { getInstanceId, addPeerDirect } = await import("./core/soul-network.js");
+    const body = await c.req.json();
+    // Just acknowledge — we don't auto-add unknown peers for security
+    return c.json({ instanceId: getInstanceId(), status: "acknowledged", peerCount: 0 });
+  } catch {
+    return c.json({ status: "error" }, 400);
+  }
+});
+
+// Public: Discovery endpoint — return our peer list (anonymized)
+app.get("/api/network/peers", async (c) => {
+  try {
+    const { listNetworkPeers, getInstanceId } = await import("./core/soul-network.js");
+    const peers = listNetworkPeers();
+    // Only return active peers with minimal info (no URLs — privacy)
+    return c.json(peers.filter((p: any) => p.is_active).map((p: any) => ({
+      id: p.peer_id,
+      name: p.peer_name,
+      capabilities: JSON.parse(p.capabilities || "[]"),
+    })));
+  } catch {
+    return c.json([]);
+  }
+});
+
+// Protected: Full network status for this Soul's master
+app.get("/api/network/status", authMiddleware(), async (c) => {
+  try {
+    const { getNetworkStatus } = await import("./core/soul-network.js");
+    return c.json(getNetworkStatus());
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
 app.get("/api/wisdom/random", authMiddleware(), async (c) => {
   const wisdom = await getRandomWisdom();
   if (!wisdom) {
@@ -1029,10 +1092,25 @@ async function main() {
   ╚═══════════════════════════════════════╝
   `);
 
-  const httpServer = serve({ fetch: app.fetch, port: PORT }, (info) => {
+  const httpServer = serve({ fetch: app.fetch, port: PORT }, async (info) => {
     console.log(`  Soul HTTP API: http://localhost:${info.port}/api/health`);
     console.log(`  Soul WebSocket: ws://localhost:${info.port}/ws`);
     startScheduler();
+
+    // Auto-start Telegram polling if configured
+    try {
+      const { startTelegramPolling, listChannels } = await import("./core/channels.js");
+      const channels = await listChannels();
+      for (const ch of channels) {
+        const cfg = typeof ch.config === "string" ? JSON.parse(ch.config || "{}") : (ch.config || {});
+        const isTelegram = ch.channelType === "telegram" || ch.name?.includes("telegram");
+        if (isTelegram && cfg.botToken) {
+          await startTelegramPolling(ch.name);
+          console.log(`  Telegram: Auto-started polling for ${ch.name}`);
+          break;
+        }
+      }
+    } catch (e: any) { console.error("  Telegram auto-start failed:", e.message); }
   });
 
   // Initialize WebSocket on the raw HTTP server

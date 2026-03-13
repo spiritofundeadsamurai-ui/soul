@@ -68,7 +68,7 @@ const CATEGORY_KEYWORDS: Record<string, string[]> = {
   conversation: ["conversation", "context", "topic", "discussed", "สนทนา", "บริบท"],
   digest: ["digest", "summary", "daily", "weekly", "สรุป", "รายวัน"],
   brain: ["brain pack", "export", "import", "private mode", "open mode", "โหมด"],
-  network: ["network", "share", "peer", "vote", "เครือข่าย"],
+  network: ["network", "share", "peer", "vote", "เครือข่าย", "sync", "collective", "แชร์ความรู้", "แชร์ประสบการณ์", "เพื่อน soul", "soul อื่น", "proposal", "discover", "hub"],
   sync: ["sync", "device", "backup", "ซิงค์"],
   scheduler: ["schedule", "cron", "briefing", "health check", "ตาราง"],
   channel: ["telegram", "discord", "send message", "channel", "ช่อง", "connect", "เชื่อมต่อ", "ต่อ", "bot token", "token", "webhook", "update soul", "อัพเดต", "self-update", "ติดตั้ง", "setup"],
@@ -88,6 +88,8 @@ const CATEGORY_KEYWORDS: Record<string, string[]> = {
   video: ["video", "animation", "countdown", "particles", "confetti", "snow", "typewriter", "วิดีโอ", "แอนิเมชัน"],
   wsnotify: ["websocket", "broadcast", "push notification", "real-time", "ws client", "แจ้งเตือนเรียลไทม์"],
   parallel: ["parallel", "worker", "concurrent", "multi-agent", "ขนาน", "พร้อมกัน"],
+  mt5: ["mt5", "metatrader", "trading", "trade", "gold", "xauusd", "forex", "candle", "signal", "chart", "position", "เทรด", "ทอง", "ราคาทอง", "กราฟ", "สัญญาณ", "ออเดอร์"],
+  selfdev: ["develop", "create feature", "add integration", "write code", "build project", "เพิ่มความสามารถ", "พัฒนาตัวเอง", "สร้างฟีเจอร์", "เขียนโค้ดเพิ่ม", "อัพเกรด", "สร้าง engine", "สร้าง tool", "แก้โค้ด", "อ่านโค้ด", "source code"],
 };
 
 // UPGRADE #5: Track tool success rates for smarter routing
@@ -115,7 +117,7 @@ function getToolSuccessRate(toolName: string): number {
   return entry.success / entry.total;
 }
 
-function routeTools(message: string, maxTools: number = 8): InternalTool[] {
+function routeTools(message: string, maxTools: number = 12): InternalTool[] {
   const lower = message.toLowerCase();
 
   // Fast path: simple greetings/chat don't need tools
@@ -250,7 +252,25 @@ YOUR CAPABILITIES (things you CAN do — never say "ทำไม่ได้"):
 - Track time, goals, habits, moods
 - Create charts, diagrams, reports, presentations
 - Research topics from the web
-- Manage 308+ tools across all domains
+- Manage 340+ tools across all domains
+
+MT5/TRADING RULES (CRITICAL — USE TOOLS, DON'T JUST TALK):
+- When user mentions ทอง/gold/XAUUSD/ราคาทอง/เทรด → MUST call soul_mt5_price or soul_mt5_analyze
+- When user asks to monitor/เฝ้าดู/ติดตาม → MUST call soul_mt5_smart_monitor
+- When user asks for multi-timeframe/หลายเฟรม → MUST call soul_mt5_multi_analyze
+- When user asks for signals/สัญญาณ → MUST call soul_mt5_analyze with the symbol
+- When user asks for positions/ออเดอร์ → MUST call soul_mt5_positions
+- When user asks for strategy stats/สถิติ → MUST call soul_mt5_strategy_stats
+- NEVER respond about gold prices from memory — ALWAYS call the tool to get REAL-TIME data
+- NEVER say "I'll set up monitoring" without actually calling soul_mt5_smart_monitor
+
+NETWORK RULES:
+- When user mentions แชร์ความรู้/network/เครือข่าย/peer → use soul_network_* tools
+- When user mentions เตรียมแชร์ → call soul_network_prepare_share
+
+SELF-DEVELOPMENT RULES:
+- When user asks you to create features/พัฒนาตัวเอง → use soul_dev_* tools
+- You CAN read/write/edit your own source code and build the project
 
 Be warm, proactive, and genuinely helpful. You are a companion, not just an assistant.
 Respond in the same language as the user's message.`;
@@ -508,6 +528,114 @@ async function tryAutoAction(
     };
   }
 
+  // ── Pattern: MT5/Gold/Trading → ALWAYS call real tools, never just talk ──
+  const isMt5 = /ทอง|gold|xauusd|ราคาทอง|วิเคราะห์.*ทอง|เทรด|trading|forex|กราฟ|chart|สัญญาณ|signal|ออเดอร์|position/i.test(lower);
+  if (isMt5) {
+    try {
+      const mt5 = await import("./mt5-engine.js");
+      await mt5.connectMt5();
+
+      // Determine what action to take based on message content
+      const wantMonitor = /เฝ้า|ติดตาม|monitor|ทุก.*นาที|every.*min|แจ้งเตือน|alert/i.test(lower);
+      const wantMultiTF = /หลาย.*เฟรม|multi.*time|ความสัมพัน|correlation|เฟรมเวลา|timeframe|M15|H1|H4|D1/i.test(lower);
+      const wantAnalyze = /วิเคราะห์|analyze|เทคนิค|technical|indicator|RSI|MACD|SMA|EMA/i.test(lower);
+      const wantPrice = /ราคา|price|เท่าไหร่|how much|ตอนนี้/i.test(lower);
+      const wantPositions = /ออเดอร์|position|พอร์ต|portfolio|กำไร|ขาดทุน/i.test(lower);
+      const wantStats = /สถิติ|stats|statistics|ผลงาน|performance|win.*rate/i.test(lower);
+
+      const toolsUsed: string[] = [];
+      const parts: string[] = [];
+
+      // Get current price first (almost always useful)
+      if (wantPrice || wantAnalyze || wantMonitor || wantMultiTF) {
+        try {
+          const price = await mt5.getPrice("XAUUSD");
+          if (price) {
+            parts.push(`💰 XAUUSD: Bid ${price.bid} / Ask ${price.ask} | Spread: ${((price.ask - price.bid) * 10).toFixed(1)} pips`);
+            toolsUsed.push("soul_mt5_price");
+          }
+        } catch {}
+      }
+
+      // Multi-timeframe analysis
+      if (wantMultiTF || wantAnalyze) {
+        try {
+          const analysis = await mt5.multiTimeframeAnalysis("XAUUSD");
+          if (analysis) {
+            parts.push(`\n📊 Multi-Timeframe Analysis:\n${JSON.stringify(analysis.correlation || analysis, null, 2).substring(0, 1500)}`);
+            toolsUsed.push("soul_mt5_multi_analyze");
+          }
+        } catch (e: any) {
+          // Fallback to single analyze
+          try {
+            const single = await mt5.analyzeChart("XAUUSD", "H1");
+            parts.push(`\n📊 H1 Analysis:\n${JSON.stringify(single, null, 2).substring(0, 1000)}`);
+            toolsUsed.push("soul_mt5_analyze");
+          } catch {}
+        }
+      }
+
+      // Start monitoring if requested
+      if (wantMonitor) {
+        try {
+          const intervalMatch = lower.match(/(\d+)\s*(?:นาที|min)/);
+          const interval = intervalMatch ? parseInt(intervalMatch[1]) : 3;
+          const monResult = await mt5.startSmartMonitor({ symbol: "XAUUSD", intervalSec: interval * 60 });
+          parts.push(`\n🔔 Smart Monitor: ${typeof monResult === 'string' ? monResult : JSON.stringify(monResult)}`);
+          toolsUsed.push("soul_mt5_smart_monitor");
+        } catch (e: any) {
+          parts.push(`\n⚠️ Monitor: ${e.message}`);
+        }
+      }
+
+      // Check positions
+      if (wantPositions) {
+        try {
+          const positions = await mt5.getPositions("XAUUSD");
+          parts.push(`\n📋 Positions: ${JSON.stringify(positions).substring(0, 500)}`);
+          toolsUsed.push("soul_mt5_positions");
+        } catch {}
+      }
+
+      // Strategy stats
+      if (wantStats) {
+        try {
+          const stats = mt5.getStrategyStats();
+          parts.push(`\n📈 Strategy Stats: ${JSON.stringify(stats).substring(0, 500)}`);
+          toolsUsed.push("soul_mt5_strategy_stats");
+        } catch {}
+      }
+
+      if (parts.length > 0) {
+        // ALWAYS return MT5 data directly — don't rely on LLM
+        const dataContext = parts.join("\n");
+        return {
+          reply: dataContext,
+          toolsUsed,
+          iterations: 1,
+          totalTokens: 0,
+          model: "auto-action",
+          provider: "soul-mt5",
+          confidence: { overall: 95, label: "very high", emoji: "🟢" },
+          responseMs: Date.now() - startTimeMs,
+        };
+      }
+    } catch (err: any) {
+      console.error("[auto-action:mt5]", err.message);
+      // MT5 failed — tell user clearly instead of falling through to LLM
+      return {
+        reply: `⚠️ MT5 ไม่สามารถเชื่อมต่อได้: ${err.message}\n\nกรุณาตรวจสอบ:\n1. MetaTrader 5 เปิดอยู่หรือไม่\n2. Python + MetaTrader5 package ติดตั้งแล้วหรือไม่\n3. ใช้คำสั่ง soul_mt5_connect เพื่อลองเชื่อมต่อใหม่`,
+        toolsUsed: ["soul_mt5_connect"],
+        iterations: 1,
+        totalTokens: 0,
+        model: "auto-action",
+        provider: "soul-mt5",
+        confidence: { overall: 50, label: "medium", emoji: "🟡" },
+        responseMs: Date.now() - startTimeMs,
+      };
+    }
+  }
+
   // ── Pattern: File management → use file tools directly ──
   if (/จัดการไฟล์|อ่านไฟล์|ดูไฟล์|เปิดไฟล์|ลิสต์ไฟล์|หาไฟล์|ค้นหาไฟล์|read file|list file|manage file|open file/i.test(lower)
     && /คอม|เครื่อง|computer|โฟลเดอร์|folder|desktop|ไดร์ฟ|drive|ดิสก์/i.test(lower)) {
@@ -739,7 +867,416 @@ async function tryAutoAction(
     }
   }
 
+  // ── Universal Intent Dispatch — covers ALL domains ──
+  // Data-driven: pattern → direct tool execution. No LLM needed for clear intents.
+  const intentResult = await dispatchIntent(lower, message, startTimeMs, options);
+  if (intentResult) return intentResult;
+
   return null; // No auto-action matched — proceed normally
+}
+
+// ─── Intent Dispatch Table ───
+// Each entry: regex patterns → tool import + execute
+// This ensures Soul DOES things instead of just talking about them
+
+interface IntentRule {
+  patterns: RegExp[];
+  extract?: (msg: string) => Record<string, any>;
+  execute: (msg: string, args: Record<string, any>) => Promise<string>;
+  tools: string[];
+}
+
+const INTENT_RULES: IntentRule[] = [
+  // ── Memory: Remember ──
+  {
+    patterns: [
+      /^(?:จำ|จำไว้|remember|บันทึก|จดไว้|จำว่า)\s*[:：]?\s*(.+)/i,
+      /(?:จำ|remember|บันทึก)(?:ไว้|ให้|ว่า|this|that)?\s*[:：]?\s*(.+)/i,
+    ],
+    extract: (msg) => {
+      for (const p of [/(?:จำ|จำไว้|remember|บันทึก|จดไว้|จำว่า)\s*[:：]?\s*(.+)/i, /(?:จำ|remember|บันทึก)(?:ไว้|ให้|ว่า|this|that)?\s*[:：]?\s*(.+)/i]) {
+        const m = msg.match(p);
+        if (m) return { content: m[1].trim() };
+      }
+      return {};
+    },
+    execute: async (msg, args) => {
+      const { remember } = await import("../memory/memory-engine.js");
+      if (!args.content) return "ต้องการให้จำอะไรครับ?";
+      const r = await remember({ content: args.content, type: "knowledge", tags: ["master-request"], source: "telegram" });
+      return `จำไว้แล้วครับ: "${args.content}" (ID: ${r?.id || "saved"})`;
+    },
+    tools: ["soul_remember"],
+  },
+
+  // ── Memory: Search ──
+  {
+    patterns: [
+      /(?:ค้นหา|หา|search|find|recall|เคย.*บอก|เคย.*จำ|เคย.*พูด)\s*[:：]?\s*(.+)/i,
+    ],
+    extract: (msg) => {
+      const m = msg.match(/(?:ค้นหา|หา|search|find|recall|เคย.*บอก|เคย.*จำ|เคย.*พูด)\s*[:：]?\s*(.+)/i);
+      return m ? { query: m[1].trim() } : {};
+    },
+    execute: async (msg, args) => {
+      const { search } = await import("../memory/memory-engine.js");
+      if (!args.query) return "ต้องการค้นหาอะไรครับ?";
+      const results = await search(args.query, 5);
+      if (results.length === 0) return `ไม่พบข้อมูลเกี่ยวกับ "${args.query}" ครับ`;
+      return `พบ ${results.length} รายการ:\n\n` + results.map((r: any, i: number) =>
+        `${i + 1}. ${r.content?.substring(0, 150) || r.text?.substring(0, 150) || "..."}`
+      ).join("\n");
+    },
+    tools: ["soul_search"],
+  },
+
+  // ── Quick Capture: Note ──
+  {
+    patterns: [
+      /^(?:note|โน้ต|บันทึก|จด)\s*[:：]?\s*(.+)/i,
+    ],
+    extract: (msg) => {
+      const m = msg.match(/^(?:note|โน้ต|บันทึก|จด)\s*[:：]?\s*(.+)/i);
+      return m ? { text: m[1].trim() } : {};
+    },
+    execute: async (_msg, args) => {
+      const { quickNote } = await import("./quick-capture.js");
+      if (!args.text) return "ต้องการบันทึกอะไรครับ?";
+      const r = await quickNote(args.text);
+      return `บันทึกแล้ว: "${args.text}"`;
+    },
+    tools: ["soul_note"],
+  },
+
+  // ── Mood ──
+  {
+    patterns: [
+      /(?:อารมณ์|mood|รู้สึก|feeling|เหนื่อย|เศร้า|ดีใจ|เครียด|มีความสุข|happy|sad|tired|stressed|angry|โกรธ|กังวล|anxious)/i,
+    ],
+    execute: async (msg) => {
+      const { detectEmotion, logMood, getEmpatheticResponse } = await import("./emotional-intelligence.js");
+      const detected = detectEmotion(msg);
+      await logMood(detected.mood, Math.round(detected.confidence * 10), "telegram", msg);
+      const empathy = getEmpatheticResponse(detected.mood);
+      return `${empathy}\n\nDetected mood: ${detected.mood} (${(detected.confidence * 100).toFixed(0)}%)`;
+    },
+    tools: ["soul_mood"],
+  },
+
+  // ── Goal ──
+  {
+    patterns: [
+      /(?:ตั้งเป้า|เป้าหมาย|goal|target|objective)\s*[:：]?\s*(.+)/i,
+    ],
+    extract: (msg) => {
+      const m = msg.match(/(?:ตั้งเป้า|เป้าหมาย|goal|target|objective)\s*[:：]?\s*(.+)/i);
+      return m ? { goal: m[1].trim() } : {};
+    },
+    execute: async (_msg, args) => {
+      const { createGoal } = await import("./life.js");
+      if (!args.goal) return "ต้องการตั้งเป้าหมายอะไรครับ?";
+      const r = await createGoal({ title: args.goal, category: "personal", description: args.goal });
+      return `ตั้งเป้าหมายแล้ว: "${args.goal}"`;
+    },
+    tools: ["soul_goal"],
+  },
+
+  // ── Web Search ──
+  {
+    patterns: [
+      /(?:ค้นเว็บ|หาข้อมูล|search web|google|web search|หาใน.*เว็บ|ค้นหา.*อินเทอร์เน็ต|ค้นหา.*ออนไลน์)\s*[:：]?\s*(.+)/i,
+      /(?:หาข้อมูล|ค้นหาเรื่อง|หาเรื่อง)\s+(.+)/i,
+    ],
+    extract: (msg) => {
+      for (const p of [/(?:ค้นเว็บ|หาข้อมูล|search web|web search)\s*[:：]?\s*(.+)/i, /(?:หาข้อมูล|ค้นหาเรื่อง|หาเรื่อง)\s+(.+)/i]) {
+        const m = msg.match(p);
+        if (m) return { query: m[1].trim() };
+      }
+      return {};
+    },
+    execute: async (_msg, args) => {
+      const { webSearch } = await import("./web-search.js");
+      if (!args.query) return "ต้องการค้นหาอะไรครับ?";
+      const r = await webSearch(args.query);
+      return typeof r === "string" ? r : JSON.stringify(r).substring(0, 2000);
+    },
+    tools: ["soul_web_search"],
+  },
+
+  // ── Timer Start ──
+  {
+    patterns: [
+      /(?:จับเวลา|start timer|timer|เริ่มจับเวลา|ตั้งเวลา)\s*[:：]?\s*(.*)/i,
+    ],
+    extract: (msg) => {
+      const m = msg.match(/(?:จับเวลา|start timer|timer|เริ่มจับเวลา|ตั้งเวลา)\s*[:：]?\s*(.*)/i);
+      return { label: m?.[1]?.trim() || "work" };
+    },
+    execute: async (_msg, args) => {
+      const { startTimer } = await import("./time-intelligence.js");
+      const r = startTimer(args.label || "work", "task");
+      return `เริ่มจับเวลา: ${args.label}`;
+    },
+    tools: ["soul_timer_start"],
+  },
+
+  // ── Timer Stop ──
+  {
+    patterns: [
+      /(?:หยุดจับเวลา|stop timer|หยุดเวลา|จบเวลา)/i,
+    ],
+    execute: async () => {
+      const { stopTimer } = await import("./time-intelligence.js");
+      const r = await stopTimer();
+      return typeof r === "string" ? r : JSON.stringify(r);
+    },
+    tools: ["soul_timer_stop"],
+  },
+
+  // ── Daily Digest ──
+  {
+    patterns: [
+      /(?:สรุป.*วัน|daily.*digest|สรุปประจำวัน|สรุปวันนี้|today.*summary|recap.*today)/i,
+    ],
+    execute: async () => {
+      const { generateDailyDigest } = await import("./daily-digest.js");
+      const r = await generateDailyDigest();
+      return typeof r === "string" ? r : JSON.stringify(r).substring(0, 2000);
+    },
+    tools: ["soul_digest"],
+  },
+
+  // ── Knowledge Store ──
+  {
+    patterns: [
+      /(?:เรียนรู้|learn|สอน|teach)\s*(?:ว่า|that|เรื่อง|about)?\s*[:：]?\s*(.+)/i,
+    ],
+    extract: (msg) => {
+      const m = msg.match(/(?:เรียนรู้|learn|สอน|teach)\s*(?:ว่า|that|เรื่อง|about)?\s*[:：]?\s*(.+)/i);
+      return m ? { content: m[1].trim() } : {};
+    },
+    execute: async (_msg, args) => {
+      const { addKnowledge } = await import("./knowledge.js");
+      if (!args.content) return "ต้องการให้เรียนรู้อะไรครับ?";
+      const r = await addKnowledge({ title: args.content.substring(0, 100), content: args.content, category: "general", source: "master" });
+      return `เรียนรู้แล้ว: "${args.content.substring(0, 100)}"`;
+    },
+    tools: ["soul_know"],
+  },
+
+  // ── Network Status ──
+  {
+    patterns: [
+      /(?:สถานะ.*เครือข่าย|network.*status|เครือข่าย.*soul|soul.*network|peer|เพื่อน.*soul)/i,
+    ],
+    execute: async () => {
+      const { getNetworkStatus } = await import("./soul-network.js");
+      const s = getNetworkStatus();
+      return `Soul Network (${s.instanceId})\nPeers: ${s.peers.active}/${s.peers.total} active\nKnowledge: ${s.knowledge.total} (${s.knowledge.shared} shared)\nSkills: ${s.skills.total}\nProposals: ${s.proposals.pending} pending`;
+    },
+    tools: ["soul_network_status"],
+  },
+
+  // ── Network Prepare Share ──
+  {
+    patterns: [
+      /(?:เตรียม.*แชร์|prepare.*share|แชร์.*ความรู้|share.*knowledge)/i,
+    ],
+    execute: async () => {
+      const { prepareForSharing } = await import("./soul-network.js");
+      const r = await prepareForSharing();
+      let out = `พร้อมแชร์: ${r.ready} รายการ | ถูก block (ข้อมูลส่วนตัว): ${r.blocked} รายการ\n\nตัวอย่าง:\n`;
+      out += r.preview.slice(0, 5).map((p: any) => `  [${p.category}] ${p.pattern.substring(0, 80)}`).join("\n");
+      out += "\n\nพิมพ์ 'อนุมัติแชร์' เพื่อยืนยัน";
+      return out;
+    },
+    tools: ["soul_network_prepare_share"],
+  },
+
+  // ── Network Approve ──
+  {
+    patterns: [
+      /(?:อนุมัติ.*แชร์|approve.*share|ยืนยัน.*แชร์)/i,
+    ],
+    execute: async () => {
+      const { approveSharing } = await import("./soul-network.js");
+      const r = approveSharing(true);
+      return r.message;
+    },
+    tools: ["soul_network_approve_share"],
+  },
+
+  // ── Network Sync ──
+  {
+    patterns: [
+      /(?:sync.*network|ซิงค์.*เครือข่าย|sync.*peer|ซิงค์.*soul)/i,
+    ],
+    execute: async () => {
+      const { syncAllPeers } = await import("./soul-network.js");
+      const r = await syncAllPeers();
+      return `Synced ${r.synced} peers | Sent: ${r.totalSent} | Received: ${r.totalReceived} | Blocked: ${r.totalBlocked}`;
+    },
+    tools: ["soul_network_sync"],
+  },
+
+  // ── Self-Dev: Read Source ──
+  {
+    patterns: [
+      /(?:อ่าน.*โค้ด|read.*source|ดู.*source|source.*code|ซอร์สโค้ด)/i,
+    ],
+    execute: async (msg) => {
+      const { getProjectStructure } = await import("./self-dev.js");
+      return getProjectStructure();
+    },
+    tools: ["soul_dev_structure"],
+  },
+
+  // ── Self-Dev: Build ──
+  {
+    patterns: [
+      /(?:build.*project|บิลด์|คอมไพล์|compile|npm.*build)/i,
+    ],
+    execute: async () => {
+      const { buildProject } = await import("./self-dev.js");
+      const r = buildProject();
+      return r.success ? `Build สำเร็จ!\n${r.output}` : `Build ล้มเหลว:\n${r.output}`;
+    },
+    tools: ["soul_dev_build"],
+  },
+
+  // ── Self-Dev: Test ──
+  {
+    patterns: [
+      /(?:run.*test|รันเทสต์|ทดสอบ.*โค้ด|npm.*test|vitest)/i,
+    ],
+    execute: async () => {
+      const { runTests } = await import("./self-dev.js");
+      const r = runTests();
+      return r.success ? `Tests ผ่าน: ${r.passed}/${r.total}\n${r.output}` : `Tests ล้มเหลว:\n${r.output}`;
+    },
+    tools: ["soul_dev_test"],
+  },
+
+  // ── Think/Brainstorm ──
+  {
+    patterns: [
+      /(?:คิด.*เรื่อง|think.*about|brainstorm|ระดมสมอง|วิเคราะห์.*เรื่อง|analyze.*topic)\s*[:：]?\s*(.+)/i,
+    ],
+    extract: (msg) => {
+      const m = msg.match(/(?:คิด.*เรื่อง|think.*about|brainstorm|ระดมสมอง|วิเคราะห์.*เรื่อง)\s*[:：]?\s*(.+)/i);
+      return m ? { topic: m[1].trim() } : {};
+    },
+    execute: async (_msg, args) => {
+      const { brainstorm } = await import("./thinking.js");
+      if (!args.topic) return "ต้องการให้คิดเรื่องอะไรครับ?";
+      const r = await brainstorm(args.topic);
+      return typeof r === "string" ? r : JSON.stringify(r).substring(0, 2000);
+    },
+    tools: ["soul_brainstorm"],
+  },
+
+  // ── People: Remember Person ──
+  {
+    patterns: [
+      /(?:จำ.*คน|remember.*person|จำ.*ชื่อ|person.*named)\s*[:：]?\s*(.+)/i,
+    ],
+    extract: (msg) => {
+      const m = msg.match(/(?:จำ.*คน|remember.*person|จำ.*ชื่อ|person.*named)\s*[:：]?\s*(.+)/i);
+      return m ? { info: m[1].trim() } : {};
+    },
+    execute: async (_msg, args) => {
+      const { addPerson } = await import("./people-memory.js");
+      if (!args.info) return "ต้องการจำใครครับ?";
+      const r = await addPerson({ name: args.info, notes: "mentioned by master" });
+      return `จำไว้แล้ว: ${args.info}`;
+    },
+    tools: ["soul_person_add"],
+  },
+
+  // ── Status ──
+  {
+    patterns: [
+      /^(?:สถานะ|status|สถานะ.*soul|soul.*status)$/i,
+    ],
+    execute: async () => {
+      const allTools = getRegisteredTools();
+      const { getMemoryStats } = await import("../memory/memory-engine.js");
+      const stats = await getMemoryStats();
+      return `Soul v${SOUL_VERSION}\nTools: ${allTools.length} registered\nMemories: ${stats?.total || 0}\nStatus: Online & Ready`;
+    },
+    tools: ["soul_status"],
+  },
+
+  // ── Create Chart/Diagram ──
+  {
+    patterns: [
+      /(?:สร้าง.*chart|สร้าง.*กราฟ|create.*chart|create.*diagram|สร้าง.*diagram|สร้าง.*แผนภาพ)\s*[:：]?\s*(.*)/i,
+    ],
+    extract: (msg) => {
+      const m = msg.match(/(?:สร้าง.*chart|สร้าง.*กราฟ|create.*chart|create.*diagram)\s*[:：]?\s*(.*)/i);
+      return { desc: m?.[1]?.trim() || "" };
+    },
+    execute: async (msg, args) => {
+      const { createSvgChart } = await import("./media-creator.js");
+      const r = createSvgChart("bar", [], { title: args.desc || "Chart" });
+      return typeof r === "string" ? r : `Chart created: ${JSON.stringify(r).substring(0, 500)}`;
+    },
+    tools: ["soul_create_chart"],
+  },
+
+  // ── Feedback ──
+  {
+    patterns: [
+      /(?:feedback|ฟีดแบ็ก|ให้คะแนน|rate|ปรับปรุง.*ตัวเอง)/i,
+    ],
+    execute: async (msg) => {
+      const { recordFeedback } = await import("./feedback-loop.js");
+      const r = await recordFeedback({ context: msg, rating: 5, category: "general", comment: "from telegram" });
+      return `บันทึก feedback แล้วครับ ผมจะนำไปปรับปรุงตัวเอง`;
+    },
+    tools: ["soul_feedback"],
+  },
+];
+
+async function dispatchIntent(
+  lower: string,
+  originalMsg: string,
+  startTimeMs: number,
+  options?: any,
+): Promise<AgentResult | null> {
+  for (const rule of INTENT_RULES) {
+    const matched = rule.patterns.some(p => p.test(lower));
+    if (!matched) continue;
+
+    try {
+      const args = rule.extract ? rule.extract(originalMsg) : {};
+      options?.onProgress?.({ type: "tool_start", tool: rule.tools[0], args });
+      const result = await rule.execute(originalMsg, args);
+      options?.onProgress?.({ type: "tool_end", tool: rule.tools[0], result, durationMs: Date.now() - startTimeMs });
+
+      // If result is short/simple, return directly. If complex, let LLM format it.
+      if (result.length < 2000) {
+        return {
+          reply: result,
+          toolsUsed: rule.tools,
+          iterations: 1,
+          totalTokens: 0,
+          model: "auto-action",
+          provider: "soul-intent",
+          confidence: { overall: 92, label: "high", emoji: "🟢" },
+          responseMs: Date.now() - startTimeMs,
+        };
+      }
+
+      // For long results, inject as context for LLM to format
+      (options as any)._intentData = result;
+      return null; // Let LLM format it
+    } catch (err: any) {
+      console.error(`[intent-dispatch:${rule.tools[0]}]`, err.message);
+      // Don't block — fall through to LLM
+    }
+  }
+  return null;
 }
 
 export type ProgressEvent =
@@ -1068,7 +1605,15 @@ export async function runSystem2Loop(
     }
   }
 
-  messages.push({ role: "user", content: sanitizedMessage });
+  // Inject real-time data if auto-action collected it (MT5, intents, etc.)
+  const mt5DataStr = (options as any)?._mt5Data;
+  const intentDataStr = (options as any)?._intentData;
+  const injectedData = [mt5DataStr, intentDataStr].filter(Boolean).join("\n\n");
+  if (injectedData) {
+    messages.push({ role: "user", content: sanitizedMessage + "\n\n[REAL-TIME DATA — use this to answer, format nicely for the user, do NOT call tools again for this data]:\n" + injectedData });
+  } else {
+    messages.push({ role: "user", content: sanitizedMessage });
+  }
 
   // UPGRADE #17: Thinking chain — add deep thinking for complex questions
   // Skip for local Ollama models (too slow for multi-step reasoning)
@@ -1428,6 +1973,12 @@ export function registerAllInternalTools() {
   registerProactiveTools_();
   registerQualityTools_();
   registerAnswerMemoryTools_();
+
+  // ── Trading / MT5 ──
+  registerMt5Tools_();
+
+  // ── Self-Development ──
+  registerSelfDevTools_();
 }
 
 // ─── Tool Registration Helpers ───
@@ -2996,48 +3547,267 @@ function registerLLMTools_() {
 }
 
 function registerNetworkTools_() {
+  // ─── Soul Collective Network — Full P2P + Discovery + Evolution ───
+
   registerInternalTool({
-    name: "soul_network_share",
-    description: "Share anonymized knowledge with the Soul network.",
+    name: "soul_network_status",
+    description: "Show Soul Collective Network status — peers, shared knowledge, skills, proposals, activity log.",
     category: "network",
     parameters: { type: "object", properties: {} },
     execute: async () => {
-      const { prepareShareableKnowledge } = await import("./network.js");
-      const items = await prepareShareableKnowledge();
-      return `Prepared ${items.length} knowledge items for sharing.`;
+      const { getNetworkStatus } = await import("./soul-network.js");
+      const s = getNetworkStatus();
+      return `Soul Network (${s.instanceId})\nVersion: ${s.version}\n\nPeers: ${s.peers.active}/${s.peers.total} active (${s.peers.trusted} trusted)\nKnowledge: ${s.knowledge.total} total, ${s.knowledge.shared} shared, ${s.knowledge.received} received\nSkills: ${s.skills.total} (${s.skills.approved} approved)\nProposals: ${s.proposals.pending} pending, ${s.proposals.approved} approved\n\nRecent:\n${s.recentActivity.slice(0, 5).map((a: any) => `  ${a.action} — ${a.items_count} items (${a.blocked_count} blocked)`).join("\n") || "  No activity yet"}`;
     },
   });
 
   registerInternalTool({
     name: "soul_network_peers",
-    description: "List known Soul network peers.",
+    description: "List all Soul network peers with trust levels.",
     category: "network",
     parameters: { type: "object", properties: {} },
     execute: async () => {
-      const { listPeers } = await import("./network.js");
-      const peers = await listPeers();
-      if (peers.length === 0) return "No network peers yet.";
-      return peers.map((p: any) => `${p.name} — ${p.url} (last seen: ${p.lastSeen || "never"})`).join("\n");
+      const { listNetworkPeers } = await import("./soul-network.js");
+      const peers = listNetworkPeers();
+      if (peers.length === 0) return "No network peers yet. Use soul_network_add_peer to add one, or soul_network_discover to find peers from a hub.";
+      return peers.map((p: any) => `${p.peer_name} [${p.peer_id}] — trust: ${(p.trust_level * 100).toFixed(0)}%, contributions: ${p.contributions}, last sync: ${p.last_sync || "never"}, ${p.is_active ? "active" : "inactive"}`).join("\n");
     },
   });
 
   registerInternalTool({
     name: "soul_network_add_peer",
-    description: "Add a new peer to the Soul network.",
+    description: "Add another Soul instance as a peer for knowledge sharing.",
     category: "network",
     parameters: {
       type: "object",
       properties: {
-        name: { type: "string", description: "Peer name" },
-        url: { type: "string", description: "Peer URL" },
-        token: { type: "string", description: "Auth token" },
+        url: { type: "string", description: "Peer Soul's URL (e.g. http://192.168.1.100:47779)" },
+        name: { type: "string", description: "Friendly name for this peer" },
       },
-      required: ["name", "url"],
+      required: ["url", "name"],
     },
     execute: async (args) => {
-      const { addPeer } = await import("./network.js");
-      const result = await addPeer(args.url, args.name);
-      return result.message;
+      const { addPeerDirect } = await import("./soul-network.js");
+      return addPeerDirect(args.url, args.name).message;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_network_remove_peer",
+    description: "Deactivate a peer from the network.",
+    category: "network",
+    parameters: {
+      type: "object",
+      properties: { peer_id: { type: "string", description: "Peer ID to remove" } },
+      required: ["peer_id"],
+    },
+    execute: async (args) => {
+      const { removePeer } = await import("./soul-network.js");
+      return removePeer(args.peer_id).message;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_network_discover",
+    description: "Discover new Soul peers from a hub registry.",
+    category: "network",
+    parameters: {
+      type: "object",
+      properties: { hub_url: { type: "string", description: "Hub URL to discover peers from" } },
+    },
+    execute: async (args) => {
+      const { discoverPeers } = await import("./soul-network.js");
+      const result = await discoverPeers(args.hub_url);
+      return result.success ? `Discovered ${result.newPeers} new peers. Total: ${result.totalPeers}` : "Discovery failed.";
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_network_prepare_share",
+    description: "Preview what knowledge would be shared (nothing sent yet). Shows what's safe and what's blocked for privacy.",
+    category: "network",
+    parameters: { type: "object", properties: {} },
+    execute: async () => {
+      const { prepareForSharing } = await import("./soul-network.js");
+      const result = await prepareForSharing();
+      let out = `Ready to share: ${result.ready} items\nBlocked (private data): ${result.blocked} items\n\nPreview:\n`;
+      out += result.preview.slice(0, 10).map((p: any) => `  [${p.category}] ${p.pattern.substring(0, 80)}`).join("\n");
+      if (result.blockedReasons.length > 0) {
+        out += `\n\nBlocked reasons:\n${result.blockedReasons.join("\n")}`;
+      }
+      out += `\n\nUse soul_network_approve_share to approve sharing.`;
+      return out;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_network_approve_share",
+    description: "Approve sharing prepared knowledge with the network. Master must approve this.",
+    category: "network",
+    parameters: {
+      type: "object",
+      properties: { approve: { type: "boolean", description: "true to approve, false to cancel" } },
+      required: ["approve"],
+    },
+    execute: async (args) => {
+      const { approveSharing } = await import("./soul-network.js");
+      return approveSharing(args.approve).message;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_network_sync",
+    description: "Sync knowledge with all active trusted peers — push our knowledge and pull theirs. Auto-filters private data.",
+    category: "network",
+    parameters: { type: "object", properties: {} },
+    execute: async () => {
+      const { syncAllPeers } = await import("./soul-network.js");
+      const r = await syncAllPeers();
+      return `Synced with ${r.synced} peers.\nSent: ${r.totalSent} items\nReceived: ${r.totalReceived} items\nBlocked (privacy): ${r.totalBlocked}\n${r.errors.length > 0 ? "Errors: " + r.errors.join(", ") : ""}`;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_network_push",
+    description: "Push knowledge to a specific peer.",
+    category: "network",
+    parameters: {
+      type: "object",
+      properties: { peer_id: { type: "string", description: "Peer ID to push to" } },
+      required: ["peer_id"],
+    },
+    execute: async (args) => {
+      const { pushToPeer } = await import("./soul-network.js");
+      const r = await pushToPeer(args.peer_id);
+      return r.message;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_network_pull",
+    description: "Pull knowledge from a specific peer.",
+    category: "network",
+    parameters: {
+      type: "object",
+      properties: { peer_id: { type: "string", description: "Peer ID to pull from" } },
+      required: ["peer_id"],
+    },
+    execute: async (args) => {
+      const { pullFromPeer } = await import("./soul-network.js");
+      const r = await pullFromPeer(args.peer_id);
+      return r.message;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_network_knowledge",
+    description: "Browse shared knowledge from the collective network.",
+    category: "network",
+    parameters: {
+      type: "object",
+      properties: {
+        category: { type: "string", description: "Filter by category (programming, trading-pattern, troubleshooting, etc.)" },
+        limit: { type: "number", description: "Max items (default 20)" },
+      },
+    },
+    execute: async (args) => {
+      const { getSharedKnowledge } = await import("./soul-network.js");
+      const items = getSharedKnowledge(args.category, args.limit || 20);
+      if (items.length === 0) return "No shared knowledge yet.";
+      return items.map((k: any) => `[${k.category}] (votes: +${k.up_votes}/-${k.down_votes}) ${k.pattern.substring(0, 100)}`).join("\n");
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_network_share_skill",
+    description: "Share a skill or tool template with the collective network.",
+    category: "network",
+    parameters: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Skill name" },
+        description: { type: "string", description: "What this skill does" },
+        category: { type: "string", description: "Category" },
+        code_template: { type: "string", description: "Optional code template" },
+      },
+      required: ["name", "description", "category"],
+    },
+    execute: async (args) => {
+      const { shareSkill } = await import("./soul-network.js");
+      return shareSkill({ name: args.name, description: args.description, category: args.category, codeTemplate: args.code_template }).message;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_network_skills",
+    description: "Browse shared skills from the collective network.",
+    category: "network",
+    parameters: {
+      type: "object",
+      properties: { category: { type: "string", description: "Filter by category" } },
+    },
+    execute: async (args) => {
+      const { getSharedSkills } = await import("./soul-network.js");
+      const skills = getSharedSkills(args.category);
+      if (skills.length === 0) return "No shared skills yet.";
+      return skills.map((s: any) => `${s.name} [${s.category}] — ${s.description} (votes: +${s.up_votes}/-${s.down_votes})`).join("\n");
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_network_propose",
+    description: "Create a proposal for collective improvement — suggest new features, patterns, or best practices.",
+    category: "network",
+    parameters: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "Proposal title" },
+        description: { type: "string", description: "What and why" },
+        category: { type: "string", description: "Category" },
+        content: { type: "string", description: "Detailed proposal content" },
+      },
+      required: ["title", "description", "category", "content"],
+    },
+    execute: async (args) => {
+      const { createProposal } = await import("./soul-network.js");
+      const r = createProposal({ title: args.title, description: args.description, category: args.category, content: args.content });
+      return r.success ? `${r.message} (ID: ${r.proposalId})` : r.message;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_network_proposals",
+    description: "Browse collective proposals.",
+    category: "network",
+    parameters: {
+      type: "object",
+      properties: { status: { type: "string", description: "Filter: pending, approved, rejected" } },
+    },
+    execute: async (args) => {
+      const { getProposals } = await import("./soul-network.js");
+      const proposals = getProposals(args.status);
+      if (proposals.length === 0) return "No proposals yet.";
+      return proposals.map((p: any) => `[${p.status}] ${p.title} — ${p.description} (votes: +${p.up_votes}/-${p.down_votes})`).join("\n");
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_network_vote",
+    description: "Vote on shared knowledge, skill, or proposal.",
+    category: "network",
+    parameters: {
+      type: "object",
+      properties: {
+        type: { type: "string", description: "knowledge, skill, or proposal" },
+        id: { type: "string", description: "Item ID or proposal ID" },
+        useful: { type: "boolean", description: "true = upvote, false = downvote" },
+      },
+      required: ["type", "id", "useful"],
+    },
+    execute: async (args) => {
+      const { vote } = await import("./soul-network.js");
+      const idVal = args.type === "proposal" ? args.id : parseInt(args.id);
+      return vote(args.type as any, idVal, args.useful).message;
     },
   });
 }
@@ -4622,6 +5392,416 @@ function registerAnswerMemoryTools_() {
       const faq = getFAQ(args.limit || 5);
       if (faq.length === 0) return "No FAQ entries yet. They build up as you interact with Soul.";
       return `FAQ (${faq.length} entries):\n${faq.map(f => `Q: ${f.questionPattern}\nA: ${f.answer.substring(0, 200)}${f.answer.length > 200 ? "..." : ""}\n(quality: ${Math.round(f.quality * 100)}%, used ${f.useCount}x)`).join("\n\n")}`;
+    },
+  });
+}
+
+function registerMt5Tools_() {
+  registerInternalTool({
+    name: "soul_mt5_connect",
+    description: "Connect to MT5 terminal for live trading data.",
+    category: "mt5",
+    parameters: { type: "object", properties: {} },
+    execute: async () => {
+      const { connectMt5 } = await import("./mt5-engine.js");
+      const result = await connectMt5();
+      let text = result.message;
+      if (result.account) {
+        const a = result.account;
+        text += `\nBalance: ${a.balance} ${a.currency} | Equity: ${a.equity} | Leverage: 1:${a.leverage}`;
+      }
+      return text;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_mt5_price",
+    description: "Get real-time price for a trading symbol (default XAUUSD gold).",
+    category: "mt5",
+    parameters: { type: "object", properties: { symbol: { type: "string", description: "Trading symbol e.g. XAUUSD" } } },
+    execute: async (args) => {
+      const { connectMt5, getPrice } = await import("./mt5-engine.js");
+      // Auto-connect if not connected
+      await connectMt5();
+      const price = await getPrice(args.symbol || "XAUUSD");
+      return `${price.symbol}: Bid ${price.bid} | Ask ${price.ask} | Spread ${price.spread}\nTime: ${price.time}`;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_mt5_analyze",
+    description: "Analyze chart with SMA, RSI, Support/Resistance and generate trading signals.",
+    category: "mt5",
+    parameters: {
+      type: "object",
+      properties: {
+        symbol: { type: "string", description: "Trading symbol" },
+        timeframe: { type: "string", description: "M1,M5,M15,M30,H1,H4,D1" },
+      },
+    },
+    execute: async (args) => {
+      const { connectMt5, analyzeChart } = await import("./mt5-engine.js");
+      await connectMt5();
+      const a = await analyzeChart(args.symbol, args.timeframe);
+      const lines = [
+        `📊 ${a.symbol} ${a.timeframe} Analysis`,
+        `💰 Price: ${a.price.bid} / ${a.price.ask}`,
+        `📈 SMA(9): ${a.indicators.sma9?.toFixed(2)} | SMA(21): ${a.indicators.sma21?.toFixed(2)}`,
+        `📊 RSI(14): ${a.indicators.rsi14?.toFixed(1)}`,
+        `🔻 Support: ${a.indicators.support?.toFixed(2)} | 🔺 Resistance: ${a.indicators.resistance?.toFixed(2)}`,
+      ];
+      if (a.signals.length > 0) {
+        lines.push("", "🔔 Signals:");
+        for (const s of a.signals) {
+          const emoji = s.type === "buy" ? "📈" : s.type === "sell" ? "📉" : "⚠️";
+          lines.push(`${emoji} ${s.type.toUpperCase()} (${s.strategy}): ${s.details}`);
+        }
+      } else {
+        lines.push("", "No signals at this time.");
+      }
+      return lines.join("\n");
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_mt5_candles",
+    description: "Get candle/OHLCV data for chart analysis.",
+    category: "mt5",
+    parameters: {
+      type: "object",
+      properties: {
+        symbol: { type: "string" },
+        timeframe: { type: "string" },
+        count: { type: "number" },
+      },
+    },
+    execute: async (args) => {
+      const { connectMt5, getCandles } = await import("./mt5-engine.js");
+      await connectMt5();
+      const data = await getCandles(args.symbol, args.timeframe, args.count || 20);
+      const lines = [`${data.symbol} ${data.timeframe} — ${data.count} candles:`];
+      for (const c of data.candles.slice(-20)) {
+        lines.push(`${c.time} | O:${c.open} H:${c.high} L:${c.low} C:${c.close} V:${c.volume}`);
+      }
+      return lines.join("\n");
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_mt5_positions",
+    description: "Show open trading positions.",
+    category: "mt5",
+    parameters: { type: "object", properties: { symbol: { type: "string" } } },
+    execute: async (args) => {
+      const { connectMt5, getPositions } = await import("./mt5-engine.js");
+      await connectMt5();
+      const data = await getPositions(args.symbol);
+      if (data.count === 0) return "No open positions.";
+      const lines = [`Open Positions (${data.count}):`];
+      for (const p of data.positions) {
+        const emoji = p.type === "buy" ? "📈" : "📉";
+        lines.push(`${emoji} ${p.symbol} ${p.type.toUpperCase()} ${p.volume} lot @ ${p.open_price} → ${p.current_price} P/L: ${p.profit}`);
+      }
+      return lines.join("\n");
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_mt5_account",
+    description: "Get MT5 account info — balance, equity, margin, profit.",
+    category: "mt5",
+    parameters: { type: "object", properties: {} },
+    execute: async () => {
+      const { connectMt5, getAccountInfo } = await import("./mt5-engine.js");
+      await connectMt5();
+      const a = await getAccountInfo();
+      return `Account: ${a.login} @ ${a.server}\nBalance: ${a.balance} ${a.currency} | Equity: ${a.equity}\nMargin: ${a.margin} | Free: ${a.free_margin}\nProfit: ${a.profit} | Leverage: 1:${a.leverage}`;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_mt5_monitor",
+    description: "Start/stop real-time price monitoring with Telegram alerts when trading signals appear.",
+    category: "mt5",
+    parameters: {
+      type: "object",
+      properties: {
+        action: { type: "string", description: "start or stop" },
+        symbol: { type: "string" },
+        intervalSec: { type: "number" },
+        telegramChannel: { type: "string" },
+      },
+    },
+    execute: async (args) => {
+      const { startMonitor, stopMonitor, connectMt5 } = await import("./mt5-engine.js");
+      if (args.action === "stop") return stopMonitor().message;
+      await connectMt5();
+      const result = await startMonitor({
+        symbol: args.symbol,
+        intervalSec: args.intervalSec,
+        telegramChannel: args.telegramChannel,
+      });
+      return result.message;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_mt5_status",
+    description: "Check MT5 connection status.",
+    category: "mt5",
+    parameters: { type: "object", properties: {} },
+    execute: async () => {
+      const { getMt5Status } = await import("./mt5-engine.js");
+      const s = getMt5Status();
+      return `MT5: ${s.connected ? "✅ Connected" : "❌ Disconnected"} | Monitor: ${s.monitoring ? "✅ Active" : "❌ Off"} | Config: ${s.config ? "✅" : "❌"}`;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_mt5_multi_analyze",
+    description: "Multi-timeframe analysis — correlate M15+H1+H4+D1 for comprehensive trading signals with MACD, Bollinger, EMA, ATR.",
+    category: "mt5",
+    parameters: {
+      type: "object",
+      properties: {
+        symbol: { type: "string" },
+        timeframes: { type: "string", description: "Comma-separated: M15,H1,H4,D1" },
+      },
+    },
+    execute: async (args) => {
+      const { connectMt5, multiTimeframeAnalysis } = await import("./mt5-engine.js");
+      await connectMt5();
+      const tfs = args.timeframes ? args.timeframes.split(",").map((s: string) => s.trim()) : undefined;
+      const a = await multiTimeframeAnalysis(args.symbol, tfs);
+      const lines = [
+        `📊 ${a.symbol} Multi-Timeframe Analysis`,
+        `💰 Price: ${a.price.bid}`,
+        `🎯 ${a.correlation.summary}`,
+        "",
+        ...a.timeframes.map(tf => {
+          const emoji = tf.trend === "bullish" ? "📈" : tf.trend === "bearish" ? "📉" : "➡️";
+          return `${emoji} ${tf.timeframe}: ${tf.trend} (${tf.strength}%) | RSI ${tf.rsi14.toFixed(1)} | MACD ${tf.macd.histogram > 0 ? "+" : ""}${tf.macd.histogram.toFixed(2)} | BB: ${tf.bollinger.position} | ATR: ${tf.atr.toFixed(2)}`;
+        }),
+      ];
+      if (a.signals.length > 0) {
+        lines.push("", "🔔 Signals:");
+        for (const s of a.signals) {
+          const emoji = s.type === "buy" ? "📈" : s.type === "sell" ? "📉" : "⚠️";
+          lines.push(`${emoji} ${s.type.toUpperCase()} (${s.strategy}): ${s.details}`);
+        }
+      }
+      return lines.join("\n");
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_mt5_smart_monitor",
+    description: "Start smart monitoring — multi-TF analysis every 5 min + auto-track outcomes + learn from results + Telegram alerts.",
+    category: "mt5",
+    parameters: {
+      type: "object",
+      properties: {
+        symbol: { type: "string" },
+        intervalSec: { type: "number", description: "Check interval (default 300 = 5min)" },
+        telegramChannel: { type: "string", description: "Channel name for alerts" },
+      },
+    },
+    execute: async (args) => {
+      const { connectMt5, startSmartMonitor } = await import("./mt5-engine.js");
+      await connectMt5();
+      const result = await startSmartMonitor({
+        symbol: args.symbol,
+        intervalSec: args.intervalSec,
+        telegramChannel: args.telegramChannel,
+      });
+      return result.message;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_mt5_strategy_stats",
+    description: "Show trading strategy statistics — win rate, total signals, avg pips per strategy.",
+    category: "mt5",
+    parameters: { type: "object", properties: {} },
+    execute: async () => {
+      const { getStrategyStats } = await import("./mt5-engine.js");
+      const stats = getStrategyStats();
+      if (stats.length === 0) return "No strategy stats yet. Start monitoring to collect data.";
+      const lines = ["📊 Strategy Statistics:", ""];
+      for (const s of stats as any[]) {
+        const wr = (s.win_rate * 100).toFixed(0);
+        lines.push(`${s.strategy} (${s.symbol} ${s.timeframe}): WR ${wr}% | ${s.wins}W/${s.losses}L of ${s.total_signals} | Avg ${s.avg_pips?.toFixed(1)} pips`);
+      }
+      return lines.join("\n");
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_mt5_track_outcomes",
+    description: "Check if past signals were profitable — auto-track all untracked signals.",
+    category: "mt5",
+    parameters: {
+      type: "object",
+      properties: { minAgeMinutes: { type: "number", description: "Min signal age in minutes (default 60)" } },
+    },
+    execute: async (args) => {
+      const { connectMt5, autoTrackOutcomes } = await import("./mt5-engine.js");
+      await connectMt5();
+      const result = await autoTrackOutcomes(args.minAgeMinutes || 60);
+      if (result.tracked === 0) return "No signals to track yet.";
+      const lines = [`Tracked ${result.tracked} signals:`];
+      for (const r of result.results) {
+        const emoji = r.outcome === "win" ? "✅" : r.outcome === "loss" ? "❌" : "➡️";
+        lines.push(`${emoji} Signal #${r.signalId} (${r.strategy}): ${r.outcome} | Entry ${r.entryPrice} → ${r.currentPrice} = ${r.pips} pips`);
+      }
+      return lines.join("\n");
+    },
+  });
+}
+
+function registerSelfDevTools_() {
+  registerInternalTool({
+    name: "soul_dev_read",
+    description: "Read Soul's own source code file. Use to understand existing code before making changes.",
+    category: "selfdev",
+    parameters: { type: "object", properties: { path: { type: "string", description: "File path e.g. core/mt5-engine.ts or src/tools/mt5.ts" } }, required: ["path"] },
+    execute: async (args) => {
+      const { readSource } = await import("./self-dev.js");
+      const r = readSource(args.path);
+      if (!r.success) return r.error!;
+      // Truncate if too long
+      const content = r.content!;
+      if (content.length > 8000) return content.substring(0, 8000) + `\n... (truncated, ${content.length} chars total)`;
+      return content;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_dev_write",
+    description: "Write/create a source code file in Soul's codebase. For creating new engines or tools.",
+    category: "selfdev",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "File path e.g. core/new-engine.ts" },
+        content: { type: "string", description: "Full file content (TypeScript)" },
+        description: { type: "string", description: "What this file does" },
+      },
+      required: ["path", "content", "description"],
+    },
+    execute: async (args) => {
+      const { writeSource } = await import("./self-dev.js");
+      const r = writeSource(args.path, args.content, args.description);
+      return r.message;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_dev_edit",
+    description: "Edit an existing source file — find and replace text. Always read the file first.",
+    category: "selfdev",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "File path" },
+        search: { type: "string", description: "Exact text to find" },
+        replace: { type: "string", description: "Replacement text" },
+        description: { type: "string", description: "What this edit does" },
+      },
+      required: ["path", "search", "replace", "description"],
+    },
+    execute: async (args) => {
+      const { editSource } = await import("./self-dev.js");
+      const r = editSource(args.path, args.search, args.replace, args.description);
+      return r.message;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_dev_build",
+    description: "Build Soul project (npm run build). Run after making code changes.",
+    category: "selfdev",
+    parameters: { type: "object", properties: {} },
+    execute: async () => {
+      const { buildProject } = await import("./self-dev.js");
+      const r = buildProject();
+      return r.success ? `✅ Build passed` : `❌ ${r.output}`;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_dev_test",
+    description: "Run all Soul tests (vitest). Run after building.",
+    category: "selfdev",
+    parameters: { type: "object", properties: {} },
+    execute: async () => {
+      const { runTests } = await import("./self-dev.js");
+      const r = runTests();
+      return r.success ? `✅ Tests passed: ${r.passed}/${r.total}` : `❌ ${r.output}`;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_dev_structure",
+    description: "Show Soul's project source code structure — all files and directories.",
+    category: "selfdev",
+    parameters: { type: "object", properties: {} },
+    execute: async () => {
+      const { getProjectStructure } = await import("./self-dev.js");
+      return getProjectStructure();
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_dev_ls",
+    description: "List files in a source directory.",
+    category: "selfdev",
+    parameters: { type: "object", properties: { path: { type: "string", description: "Directory path e.g. core/ or tools/" } } },
+    execute: async (args) => {
+      const { listSource } = await import("./self-dev.js");
+      const r = listSource(args.path);
+      return `Files: ${r.files.join(", ")}\nDirs: ${r.dirs.join(", ")}`;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_dev_history",
+    description: "Show development history — what Soul has modified in its own codebase.",
+    category: "selfdev",
+    parameters: { type: "object", properties: { limit: { type: "number" } } },
+    execute: async (args) => {
+      const { getDevHistory } = await import("./self-dev.js");
+      const history = getDevHistory(args.limit || 10);
+      if (history.length === 0) return "No development history yet.";
+      return history.map((h: any) => `${h.created_at} | ${h.status === "success" ? "✅" : "❌"} ${h.action}: ${h.description}${h.file_path ? ` (${h.file_path})` : ""}`).join("\n");
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_dev_deploy",
+    description: "Full development cycle: write files → build → test → report. Use this for creating complete new features.",
+    category: "selfdev",
+    parameters: {
+      type: "object",
+      properties: {
+        description: { type: "string", description: "What this development does" },
+        files: { type: "string", description: "JSON array of {path, content} objects" },
+        edits: { type: "string", description: "JSON array of {path, search, replace} objects (optional)" },
+      },
+      required: ["description", "files"],
+    },
+    execute: async (args) => {
+      const { developAndDeploy } = await import("./self-dev.js");
+      let files: Array<{ path: string; content: string }>;
+      let edits: Array<{ path: string; search: string; replace: string }> | undefined;
+      try {
+        files = JSON.parse(args.files);
+        if (args.edits) edits = JSON.parse(args.edits);
+      } catch {
+        return "Error: files/edits must be valid JSON arrays";
+      }
+      const r = await developAndDeploy({ description: args.description, files, edits });
+      return r.message;
     },
   });
 }

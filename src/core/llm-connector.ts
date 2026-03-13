@@ -150,11 +150,11 @@ const PROVIDER_PRESETS: Record<string, Omit<ProviderConfig, "apiKey" | "isActive
     type: "openai-compatible",
     baseUrl: "https://api.groq.com/openai/v1",
     models: [
-      { id: "llama-3.1-8b-instant", name: "llama-3.1-8b-instant", displayName: "Llama 3.1 8B", contextWindow: 131072, maxOutput: 8192, supportsTools: true, supportsVision: false, costInputPerM: 0.05, costOutputPerM: 0.08, tags: ["budget", "ultra-fast"] },
-      { id: "qwen/qwen3-32b", name: "qwen/qwen3-32b", displayName: "Qwen 3 32B", contextWindow: 131072, maxOutput: 8192, supportsTools: true, supportsVision: false, costInputPerM: 0.29, costOutputPerM: 0.59, tags: ["recommended", "fast"] },
-      { id: "llama-3.3-70b-versatile", name: "llama-3.3-70b-versatile", displayName: "Llama 3.3 70B", contextWindow: 131072, maxOutput: 32768, supportsTools: true, supportsVision: false, costInputPerM: 0.59, costOutputPerM: 0.79, tags: ["quality"] },
-      { id: "meta-llama/llama-4-scout-17b-16e-instruct", name: "meta-llama/llama-4-scout-17b-16e-instruct", displayName: "Llama 4 Scout 17B", contextWindow: 131072, maxOutput: 8192, supportsTools: true, supportsVision: false, costInputPerM: 0.11, costOutputPerM: 0.34, tags: ["fast", "new"] },
-      { id: "moonshotai/kimi-k2-instruct", name: "moonshotai/kimi-k2-instruct", displayName: "Kimi K2", contextWindow: 131072, maxOutput: 8192, supportsTools: true, supportsVision: false, costInputPerM: 0.20, costOutputPerM: 0.40, tags: ["quality", "new"] },
+      { id: "llama-3.1-8b-instant", name: "llama-3.1-8b-instant", displayName: "Llama 3.1 8B", contextWindow: 131072, maxOutput: 8192, supportsTools: true, supportsVision: false, costInputPerM: 0, costOutputPerM: 0, tags: ["free", "budget", "ultra-fast"] },
+      { id: "qwen/qwen3-32b", name: "qwen/qwen3-32b", displayName: "Qwen 3 32B", contextWindow: 131072, maxOutput: 8192, supportsTools: true, supportsVision: false, costInputPerM: 0, costOutputPerM: 0, tags: ["free", "recommended", "fast"] },
+      { id: "llama-3.3-70b-versatile", name: "llama-3.3-70b-versatile", displayName: "Llama 3.3 70B", contextWindow: 131072, maxOutput: 32768, supportsTools: true, supportsVision: false, costInputPerM: 0, costOutputPerM: 0, tags: ["free", "quality"] },
+      { id: "meta-llama/llama-4-scout-17b-16e-instruct", name: "meta-llama/llama-4-scout-17b-16e-instruct", displayName: "Llama 4 Scout 17B", contextWindow: 131072, maxOutput: 8192, supportsTools: true, supportsVision: false, costInputPerM: 0, costOutputPerM: 0, tags: ["free", "fast", "new"] },
+      { id: "moonshotai/kimi-k2-instruct", name: "moonshotai/kimi-k2-instruct", displayName: "Kimi K2", contextWindow: 131072, maxOutput: 8192, supportsTools: true, supportsVision: false, costInputPerM: 0, costOutputPerM: 0, tags: ["free", "quality", "new"] },
     ],
   },
   deepseek: {

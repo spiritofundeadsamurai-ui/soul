@@ -58,6 +58,7 @@ import { registerPlannerTools } from "./tools/agent-planner.js";
 import { registerAutoToolTools } from "./tools/auto-tool.js";
 import { registerParallelTools } from "./tools/parallel-agent.js";
 import { registerDualBrainTools } from "./tools/dual-brain.js";
+import { registerMt5Tools } from "./tools/mt5.js";
 
 async function main() {
   // Initialize Soul
@@ -129,6 +130,7 @@ async function main() {
   registerAutoToolTools(collector as any);
   registerParallelTools(collector as any);
   registerDualBrainTools(collector as any);
+  registerMt5Tools(collector as any);
 
   // Register soul_agent meta-tool — gateway to ALL 300+ tools
   registerSoulAgent(server);

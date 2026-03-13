@@ -98,19 +98,99 @@ export function getModelPerformance(): ModelPerformance[] {
   }
 }
 
+// ─── Cascade Config ───
+// Defines which model to use per complexity tier
+// Soul auto-detects configured providers and builds the best cascade
+
+interface CascadeTier {
+  providerId: string;
+  modelId: string;
+  label: string;
+}
+
 /**
- * Route a message to the best model based on complexity
+ * Build optimal cascade from configured providers
+ * Priority: cheapest fast model for simple, default for medium, best for complex
+ */
+export function buildCascade(): { simple: CascadeTier; medium: CascadeTier; complex: CascadeTier } | null {
+  const providers = listConfiguredProviders();
+  const defaultConfig = getDefaultConfig();
+  if (!defaultConfig) return null;
+
+  const defaultTier: CascadeTier = {
+    providerId: defaultConfig.providerId,
+    modelId: defaultConfig.modelId,
+    label: `${defaultConfig.providerId}/${defaultConfig.modelId}`,
+  };
+
+  // Cost ranking (lowest first) for configured providers
+  const costRank: Record<string, number> = {
+    "groq:llama-3.1-8b-instant": 0.05,
+    "groq:meta-llama/llama-4-scout-17b-16e-instruct": 0.11,
+    "gemini:gemini-2.5-flash": 0.15,
+    "openai:gpt-4o-mini": 0.15,
+    "together:Qwen/Qwen3-Coder-32B-Instruct": 0.20,
+    "groq:moonshotai/kimi-k2-instruct": 0.20,
+    "deepseek:deepseek-chat": 0.28,
+    "groq:qwen/qwen3-32b": 0.29,
+    "groq:llama-3.3-70b-versatile": 0.59,
+    "openai:gpt-4o": 2.50,
+    "anthropic:claude-sonnet-4-6": 3.00,
+    "gemini:gemini-2.5-pro": 1.25,
+    "openai:gpt-5": 1.25,
+  };
+
+  // Quality ranking (best first) for complex tasks
+  const qualityRank: Record<string, number> = {
+    "anthropic:claude-sonnet-4-6": 95,
+    "openai:gpt-5": 93,
+    "gemini:gemini-2.5-pro": 92,
+    "openai:gpt-4o": 88,
+    "deepseek:deepseek-reasoner": 87,
+    "deepseek:deepseek-chat": 82,
+    "groq:qwen/qwen3-32b": 80,
+    "groq:llama-3.3-70b-versatile": 80,
+    "groq:moonshotai/kimi-k2-instruct": 78,
+    "gemini:gemini-2.5-flash": 78,
+    "openai:gpt-4o-mini": 75,
+  };
+
+  // Find cheapest configured provider for simple tasks
+  let simpleTier = defaultTier;
+  let cheapestCost = Infinity;
+  for (const p of providers) {
+    const key = `${p.providerId}:${p.modelId}`;
+    const cost = costRank[key];
+    if (cost !== undefined && cost < cheapestCost) {
+      cheapestCost = cost;
+      simpleTier = { providerId: p.providerId, modelId: p.modelId, label: key };
+    }
+  }
+
+  // Find best quality configured provider for complex tasks
+  let complexTier = defaultTier;
+  let bestQuality = 0;
+  for (const p of providers) {
+    const key = `${p.providerId}:${p.modelId}`;
+    const quality = qualityRank[key];
+    if (quality !== undefined && quality > bestQuality) {
+      bestQuality = quality;
+      complexTier = { providerId: p.providerId, modelId: p.modelId, label: key };
+    }
+  }
+
+  return { simple: simpleTier, medium: defaultTier, complex: complexTier };
+}
+
+/**
+ * Route a message to the best model based on complexity + cascade
  */
 export function routeToModel(
   message: string,
   taskType?: string,
 ): ModelRoute | null {
-  const providers = listConfiguredProviders();
   const defaultConfig = getDefaultConfig();
-
-  if (providers.length <= 1 || !defaultConfig) {
-    return null; // only one model, no routing needed
-  }
+  if (!defaultConfig) return null;
 
   const lower = message.toLowerCase();
   const len = message.length;
@@ -118,67 +198,79 @@ export function routeToModel(
   // Classify the task
   let detectedTaskType = taskType || "general";
   if (!taskType) {
-    // Simple chat detection
-    const isSimple = len < 50 && !lower.includes("why") && !lower.includes("how") && !lower.includes("explain");
+    const isSimple = len < 50 && !lower.includes("why") && !lower.includes("how") && !lower.includes("explain")
+      && !lower.includes("ทำไม") && !lower.includes("ยังไง") && !lower.includes("อธิบาย");
     const isCreative = lower.includes("write") || lower.includes("story") || lower.includes("poem") ||
                        lower.includes("เขียน") || lower.includes("แต่ง");
     const isAnalytical = lower.includes("analyze") || lower.includes("compare") || lower.includes("design") ||
                         lower.includes("วิเคราะห์") || lower.includes("ออกแบบ") || lower.includes("เปรียบเทียบ");
     const isCoding = lower.includes("code") || lower.includes("function") || lower.includes("bug") ||
-                     lower.includes("โค้ด") || lower.includes("debug");
+                     lower.includes("โค้ด") || lower.includes("debug") || lower.includes("implement");
+    const isReasoning = lower.includes("why") || lower.includes("reason") || lower.includes("prove") ||
+                        lower.includes("ทำไม") || lower.includes("เพราะ") || lower.includes("พิสูจน์");
 
-    if (isSimple) detectedTaskType = "simple";
+    // Specific categories take priority over the "simple" length heuristic
+    if (isCoding) detectedTaskType = "coding";
+    else if (isAnalytical || isReasoning) detectedTaskType = "analytical";
     else if (isCreative) detectedTaskType = "creative";
-    else if (isAnalytical) detectedTaskType = "analytical";
-    else if (isCoding) detectedTaskType = "coding";
+    else if (isSimple) detectedTaskType = "simple";
     else if (len > 200) detectedTaskType = "complex";
+    else detectedTaskType = "medium";
   }
 
-  // Find best model based on task type and past performance
-  const stats = getModelPerformance();
-
   // Temperature routing
-  let temperature = 0.7; // default
+  let temperature = 0.7;
   switch (detectedTaskType) {
     case "simple": temperature = 0.5; break;
     case "creative": temperature = 0.9; break;
     case "analytical": temperature = 0.3; break;
     case "coding": temperature = 0.2; break;
     case "complex": temperature = 0.5; break;
+    case "medium": temperature = 0.7; break;
   }
 
-  // For simple tasks, prefer faster models
-  if (detectedTaskType === "simple" && stats.length > 1) {
-    const fastest = stats.sort((a, b) => a.avgResponseMs - b.avgResponseMs)[0];
-    if (fastest.avgResponseMs < 5000) { // only if significantly faster
-      return {
-        providerId: fastest.providerId,
-        modelId: fastest.modelId,
-        temperature,
-        reason: `Fast model for simple task (avg ${fastest.avgResponseMs}ms)`,
-      };
+  // Build cascade from configured providers
+  const cascade = buildCascade();
+  if (cascade) {
+    // Map task type to cascade tier
+    const isComplex = ["analytical", "complex", "coding"].includes(detectedTaskType);
+    const isSimple = detectedTaskType === "simple";
+
+    const tier = isComplex ? cascade.complex : isSimple ? cascade.simple : cascade.medium;
+
+    return {
+      providerId: tier.providerId,
+      modelId: tier.modelId,
+      temperature,
+      reason: `Cascade: ${tier.label} for ${detectedTaskType} (temp=${temperature})`,
+    };
+  }
+
+  // Fallback: check performance stats
+  const stats = getModelPerformance();
+  if (stats.length > 1) {
+    if (detectedTaskType === "simple") {
+      const fastest = [...stats].sort((a, b) => a.avgResponseMs - b.avgResponseMs)[0];
+      if (fastest.avgResponseMs < 5000) {
+        return { providerId: fastest.providerId, modelId: fastest.modelId, temperature,
+          reason: `Fast model for simple task (avg ${fastest.avgResponseMs}ms)` };
+      }
+    }
+    if (["analytical", "complex", "coding"].includes(detectedTaskType)) {
+      const best = [...stats].sort((a, b) => b.successRate - a.successRate)[0];
+      if (best.successRate > 0.8) {
+        return { providerId: best.providerId, modelId: best.modelId, temperature,
+          reason: `Best model for ${detectedTaskType} (${Math.round(best.successRate * 100)}% success)` };
+      }
     }
   }
 
-  // For complex/analytical tasks, prefer most accurate model
-  if (["analytical", "complex", "coding"].includes(detectedTaskType) && stats.length > 1) {
-    const mostAccurate = stats.sort((a, b) => b.successRate - a.successRate)[0];
-    if (mostAccurate.successRate > 0.8) {
-      return {
-        providerId: mostAccurate.providerId,
-        modelId: mostAccurate.modelId,
-        temperature,
-        reason: `Best model for ${detectedTaskType} (${Math.round(mostAccurate.successRate * 100)}% success)`,
-      };
-    }
-  }
-
-  // Default: use default config with task-appropriate temperature
+  // Default with appropriate temperature
   return {
     providerId: defaultConfig.providerId,
-    modelId: defaultConfig.modelName,
+    modelId: defaultConfig.modelId,
     temperature,
-    reason: `Default model with temperature ${temperature} for ${detectedTaskType}`,
+    reason: `Default model (temp=${temperature}) for ${detectedTaskType}`,
   };
 }
 

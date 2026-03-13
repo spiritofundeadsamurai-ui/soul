@@ -579,14 +579,7 @@ async function pollTelegramLoop(
           } catch { /* ok — no history */ }
 
           const result = await runAgentLoop(text, {
-            systemPrompt: `You are Soul v${SOUL_VERSION || "1.9.1"}, an AI companion responding via Telegram to ${fromName}.
-RULES:
-1. When user writes in Thai → ALWAYS reply in Thai. NEVER switch to English.
-2. Keep responses concise (1-3 paragraphs max).
-3. You have 308 tools — you CAN read files, manage things, search, remember, etc. NEVER say "ทำไม่ได้".
-4. NEVER output <think> tags, internal reasoning, or duplicate responses.
-5. Send ONE reply only. Do not repeat yourself.
-6. Use context from previous messages — the user may refer to files/folders mentioned earlier. DO NOT ask them to repeat information you already have.`,
+            systemPrompt: undefined, // Use default system prompt with full MT5/Network/Self-Dev rules
             history: conversationHistory as any[],
             maxIterations: 5,
           });
