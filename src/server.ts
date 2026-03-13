@@ -169,6 +169,40 @@ app.get("/community", (c) => {
   }
 });
 
+// === PWA Static Files ===
+
+app.get("/manifest.json", (c) => {
+  try {
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname = dirname(__filename);
+    const json = readFileSync(join(__dirname, "web", "manifest.json"), "utf-8");
+    return c.json(JSON.parse(json));
+  } catch { return c.json({}, 404); }
+});
+
+app.get("/sw.js", (c) => {
+  try {
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname = dirname(__filename);
+    const js = readFileSync(join(__dirname, "web", "sw.js"), "utf-8");
+    c.header("Content-Type", "application/javascript");
+    c.header("Service-Worker-Allowed", "/");
+    return c.body(js);
+  } catch { return c.text("", 404); }
+});
+
+// Dynamic SVG icon for PWA (no image dependency needed)
+app.get("/api/icon/:size", (c) => {
+  const size = parseInt(c.req.param("size") || "192");
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+    <rect width="${size}" height="${size}" rx="${size * 0.2}" fill="#7c3aed"/>
+    <text x="50%" y="55%" font-family="system-ui,sans-serif" font-size="${size * 0.5}" font-weight="700" fill="white" text-anchor="middle" dominant-baseline="middle">S</text>
+  </svg>`;
+  c.header("Content-Type", "image/svg+xml");
+  c.header("Cache-Control", "public, max-age=86400");
+  return c.body(svg);
+});
+
 // === Public routes ===
 
 app.get("/api/health", async (c) => {
@@ -1074,6 +1108,42 @@ app.post("/api/discord/message", async (c) => {
   }
 });
 
+// LINE Webhook — POST /api/line/webhook
+app.post("/api/line/webhook", async (c) => {
+  try {
+    const payload = await c.req.json();
+    const { handleLineWebhook } = await import("./core/channels.js");
+    const result = await handleLineWebhook(payload);
+    return c.json(result.body, result.statusCode as any);
+  } catch (err: any) {
+    console.error("[LINE] Webhook error:", err.message);
+    return c.json({}, 200); // LINE expects 200 even on error
+  }
+});
+
+// WhatsApp Setup — POST /api/whatsapp/setup
+app.post("/api/whatsapp/setup", async (c) => {
+  try {
+    const { channelName } = await c.req.json().catch(() => ({} as any));
+    const { whatsappAutoSetup } = await import("./core/channels.js");
+    const result = await whatsappAutoSetup(channelName);
+    return c.json(result);
+  } catch (err: any) {
+    console.error("[WhatsApp] Setup error:", err.message);
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+// WhatsApp Status — GET /api/whatsapp/status
+app.get("/api/whatsapp/status", async (c) => {
+  try {
+    const { getWhatsAppStatus } = await import("./core/channels.js");
+    return c.json(getWhatsAppStatus());
+  } catch (err: any) {
+    return c.json({ connected: false, qrCode: null, channelName: null });
+  }
+});
+
 // === Start ===
 
 async function main() {
@@ -1096,6 +1166,60 @@ async function main() {
     console.log(`  Soul HTTP API: http://localhost:${info.port}/api/health`);
     console.log(`  Soul WebSocket: ws://localhost:${info.port}/ws`);
     startScheduler();
+
+    // Initialize vector embeddings (non-blocking)
+    import("./memory/embeddings.js").then(async ({ initEmbeddingProvider, startEmbeddingBuilder, getEmbeddingStats }) => {
+      try {
+        const hasProvider = await initEmbeddingProvider();
+        if (hasProvider) {
+          startEmbeddingBuilder();
+          const stats = getEmbeddingStats();
+          console.log(`  🧬 Embeddings: ${stats.provider}/${stats.model} — ${stats.embeddedMemories}/${stats.totalMemories} memories (${stats.coverage}%)`);
+        } else {
+          console.log("  🧬 Embeddings: No provider — using TF-IDF fallback");
+        }
+      } catch (e: any) { console.log(`  Embeddings init skipped: ${e.message}`); }
+    }).catch(() => {});
+
+    // Sync workspace files at startup (non-blocking)
+    import("./core/workspace-files.js").then(({ syncWorkspaceFiles }) => {
+      try {
+        const result = syncWorkspaceFiles();
+        console.log(`  📁 Workspace: ${result.files.length} files synced`);
+      } catch (e: any) { console.log(`  Workspace sync skipped: ${e.message}`); }
+    }).catch(() => {});
+
+    // Load plugins at startup (non-blocking)
+    import("./core/plugin-marketplace.js").then(async ({ loadAllPlugins, getPluginStats }) => {
+      try {
+        const count = await loadAllPlugins();
+        const stats = getPluginStats();
+        if (stats.total > 0) {
+          console.log(`  🔌 Plugins: ${stats.active}/${stats.total} active (${count} tools loaded)`);
+        }
+      } catch (e: any) { console.log(`  Plugins load skipped: ${e.message}`); }
+    }).catch(() => {});
+
+    // Run self-diagnostics at startup (non-blocking)
+    import("./core/self-healing.js").then(async ({ runSelfDiagnostics, formatDiagnosticReport }) => {
+      try {
+        const diag = await runSelfDiagnostics();
+        if (diag.overallStatus !== "healthy") {
+          console.log(`\n  ⚠️ Self-Diagnostic: ${diag.overallStatus.toUpperCase()}`);
+          for (const d of diag.diagnostics.filter(d => d.status !== "ok")) {
+            console.log(`    ${d.status === "critical" ? "❌" : "⚠️"} ${d.category}: ${d.detail}`);
+          }
+          if (diag.autoFixes.length > 0) {
+            console.log(`  🔧 Auto-fixes: ${diag.autoFixes.join("; ")}`);
+          }
+          if (diag.recommendations.length > 0) {
+            for (const rec of diag.recommendations) console.log(`  💡 ${rec}`);
+          }
+        } else {
+          console.log(`  🟢 Self-Diagnostic: All ${diag.diagnostics.length} checks passed`);
+        }
+      } catch (e: any) { console.log(`  Self-diagnostic skipped: ${e.message}`); }
+    }).catch(() => {});
 
     // Auto-start Telegram polling if configured
     try {

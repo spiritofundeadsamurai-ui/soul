@@ -149,6 +149,9 @@ export async function processDualBrain(
 
     // Pattern/Tool reflex — confident enough to respond
     // BUT: NEVER use cached pattern for action messages — they need real tool execution
+    if (reflexResult.handled) {
+      console.log(`[DualBrain] System1 match: type=${reflexResult.reflexType} conf=${reflexResult.confidence} isAction=${isAction} threshold=${threshold * 100} → ${isAction ? "SKIP (action msg)" : "USE"}`);
+    }
     if (!isAction && reflexResult.handled && reflexResult.confidence && reflexResult.confidence >= threshold * 100) {
       trackMetrics("system1", userMessage, reflexResult.reflexType, reflexResult.latencyMs, reflexResult.confidence, undefined, false);
       return {
@@ -263,6 +266,11 @@ async function learnFromSystem2(message: string, result: AgentResult): Promise<v
     if (quality < 0.7) return;
     if (!result.reply || result.reply.length > 500) return;
     if (result.toolsUsed.length > 0) return; // Tool-dependent responses don't cache well
+
+    // CRITICAL: NEVER promote action messages to reflexes!
+    // Action messages need real tool execution every time.
+    // Caching a text response for "ราคาทอง" would return stale "MT5 not ready" forever.
+    if (isActionMessage(message)) return;
 
     ensureBrainMetricsTable();
     const db = getRawDb();

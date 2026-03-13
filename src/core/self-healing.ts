@@ -443,3 +443,298 @@ export function hashArgs(args: Record<string, any>): string {
     .join(",");
   return pattern;
 }
+
+// ─── Deep Self-Diagnostics ───
+// Soul's ability to detect its OWN problems — not wait for Claude/human to find them
+
+export interface DiagnosticResult {
+  category: string;
+  status: "ok" | "warning" | "critical";
+  detail: string;
+  autoFix?: string; // What Soul did to fix it
+}
+
+export interface SelfDiagnosticReport {
+  timestamp: string;
+  overallStatus: "healthy" | "degraded" | "critical";
+  diagnostics: DiagnosticResult[];
+  autoFixes: string[];
+  recommendations: string[];
+}
+
+/**
+ * Run comprehensive self-diagnostics — Soul checks its own brain, tools, routing, LLM, and MT5
+ * This is the "Soul knows its own problems" system
+ */
+export async function runSelfDiagnostics(): Promise<SelfDiagnosticReport> {
+  const diagnostics: DiagnosticResult[] = [];
+  const autoFixes: string[] = [];
+  const recommendations: string[] = [];
+
+  // ── 1. Tool Registration ──
+  try {
+    const { registerAllInternalTools, getRegisteredTools } = await import("./agent-loop.js");
+    const toolsBefore = getRegisteredTools().length;
+    if (toolsBefore === 0) {
+      registerAllInternalTools();
+      const toolsAfter = getRegisteredTools().length;
+      autoFixes.push(`Tools were NOT registered (0 tools). Auto-fixed: registered ${toolsAfter} tools.`);
+      diagnostics.push({ category: "tool_registration", status: "warning", detail: `Was 0, now ${toolsAfter} tools`, autoFix: "Called registerAllInternalTools()" });
+    } else {
+      diagnostics.push({ category: "tool_registration", status: "ok", detail: `${toolsBefore} tools registered` });
+    }
+  } catch (e: any) {
+    diagnostics.push({ category: "tool_registration", status: "critical", detail: `Failed: ${e.message}` });
+  }
+
+  // ── 2. Tool Routing — test with known action messages ──
+  try {
+    const { getRegisteredTools, isActionMessage } = await import("./agent-loop.js");
+    const testMessages = [
+      { msg: "ราคาทอง", expectCategory: "mt5" },
+      { msg: "จำไว้ว่าพรุ่งนี้ประชุม", expectCategory: "memory" },
+      { msg: "ค้นหา AI trends", expectCategory: "websearch" },
+    ];
+
+    const allTools = getRegisteredTools();
+    const CATEGORY_KEYWORDS: Record<string, string[]> = {
+      mt5: ["mt5", "metatrader", "trading", "trade", "gold", "xauusd", "forex", "candle", "signal", "chart", "position", "เทรด", "ทอง", "ราคาทอง", "ราคา", "กราฟ", "สัญญาณ", "ออเดอร์", "เฝ้า", "ติดตาม", "monitor"],
+      memory: ["remember", "recall", "forget", "memory", "search", "find", "know", "learned", "จำ", "ค้นหา", "ความจำ", "เรียนรู้"],
+      websearch: ["web", "search", "google", "url", "browse", "fetch", "เว็บ", "ค้นหา", "ค้น", "เสิร์ช", "หาข้อมูล"],
+    };
+
+    let routingIssues = 0;
+    for (const test of testMessages) {
+      const lower = test.msg.toLowerCase();
+      const isAction = isActionMessage(test.msg);
+      const keywords = CATEGORY_KEYWORDS[test.expectCategory] || [];
+      const matches = keywords.filter(kw => lower.includes(kw));
+      const catTools = allTools.filter(t => t.category === test.expectCategory);
+
+      if (!isAction && test.expectCategory === "mt5") {
+        diagnostics.push({ category: "tool_routing", status: "warning", detail: `"${test.msg}" not detected as action message` });
+        routingIssues++;
+      } else if (matches.length === 0) {
+        diagnostics.push({ category: "tool_routing", status: "warning", detail: `"${test.msg}" has no keyword matches for ${test.expectCategory}` });
+        routingIssues++;
+      } else if (catTools.length === 0) {
+        diagnostics.push({ category: "tool_routing", status: "critical", detail: `Category "${test.expectCategory}" has 0 tools registered!` });
+        routingIssues++;
+      }
+    }
+    if (routingIssues === 0) {
+      diagnostics.push({ category: "tool_routing", status: "ok", detail: `All ${testMessages.length} test messages route correctly` });
+    }
+  } catch (e: any) {
+    diagnostics.push({ category: "tool_routing", status: "critical", detail: `Routing test failed: ${e.message}` });
+  }
+
+  // ── 3. LLM Connectivity ──
+  try {
+    const { getDefaultConfig, listConfiguredProviders } = await import("./llm-connector.js");
+    const defaultConfig = getDefaultConfig();
+    const providers = listConfiguredProviders();
+
+    if (!defaultConfig) {
+      diagnostics.push({ category: "llm_config", status: "critical", detail: "No default LLM configured!" });
+      recommendations.push("Run soul_llm_add to configure an LLM provider");
+    } else {
+      diagnostics.push({ category: "llm_config", status: "ok", detail: `Default: ${defaultConfig.providerId}/${defaultConfig.modelId}, ${providers.length} providers configured` });
+    }
+
+    // Quick LLM ping — try a minimal chat call
+    if (defaultConfig) {
+      try {
+        const { chat } = await import("./llm-connector.js");
+        const testStart = Date.now();
+        const testResponse = await chat(
+          [{ role: "user", content: "Say OK" }],
+          { providerId: defaultConfig.providerId, modelId: defaultConfig.modelId, temperature: 0 },
+        );
+        const testMs = Date.now() - testStart;
+        if (testResponse.content && testResponse.content.length > 0) {
+          diagnostics.push({ category: "llm_connectivity", status: testMs > 10000 ? "warning" : "ok", detail: `LLM responded in ${testMs}ms: "${testResponse.content.substring(0, 30)}"` });
+        } else {
+          diagnostics.push({ category: "llm_connectivity", status: "warning", detail: `LLM returned empty response in ${testMs}ms` });
+        }
+      } catch (e: any) {
+        diagnostics.push({ category: "llm_connectivity", status: "critical", detail: `LLM unreachable: ${e.message.substring(0, 100)}` });
+        recommendations.push("Check LLM provider API key and network connectivity");
+      }
+    }
+  } catch (e: any) {
+    diagnostics.push({ category: "llm_config", status: "critical", detail: `LLM config check failed: ${e.message}` });
+  }
+
+  // ── 4. Tool-calling test — does LLM actually call tools? ──
+  try {
+    const { getDefaultConfig, chat } = await import("./llm-connector.js");
+    const defaultConfig = getDefaultConfig();
+    if (defaultConfig) {
+      const testResponse = await chat(
+        [
+          { role: "system", content: "You are a helpful assistant. When the user asks for a price, ALWAYS call the get_price tool." },
+          { role: "user", content: "What is the gold price?" },
+        ],
+        {
+          providerId: defaultConfig.providerId,
+          modelId: defaultConfig.modelId,
+          tools: [{
+            type: "function" as const,
+            function: {
+              name: "get_price",
+              description: "Get price for a symbol",
+              parameters: { type: "object", properties: { symbol: { type: "string" } } },
+            },
+          }],
+          temperature: 0,
+        },
+      );
+
+      if (testResponse.toolCalls && testResponse.toolCalls.length > 0) {
+        diagnostics.push({ category: "llm_tool_calling", status: "ok", detail: `LLM correctly called tool: ${testResponse.toolCalls[0].function.name}` });
+      } else {
+        diagnostics.push({ category: "llm_tool_calling", status: "critical", detail: `LLM did NOT call tools — responded with text: "${(testResponse.content || "").substring(0, 60)}"` });
+        recommendations.push("Current LLM model may not support tool calling well. Consider switching to a model with better tool support (e.g., kimi-k2, gpt-4o-mini, claude-sonnet)");
+      }
+    }
+  } catch (e: any) {
+    diagnostics.push({ category: "llm_tool_calling", status: "warning", detail: `Tool-calling test failed: ${e.message.substring(0, 80)}` });
+  }
+
+  // ── 5. Action-Talk Ratio (recent brain metrics) ──
+  try {
+    const db = getRawDb();
+    const recentActions = db.prepare(`
+      SELECT
+        COUNT(*) as total,
+        SUM(CASE WHEN brain = 'system2' THEN 1 ELSE 0 END) as system2,
+        SUM(CASE WHEN brain = 'auto-action' THEN 1 ELSE 0 END) as auto_action,
+        SUM(CASE WHEN brain = 'system1' THEN 1 ELSE 0 END) as system1
+      FROM soul_brain_metrics
+      WHERE created_at > datetime('now', '-24 hours')
+    `).get() as any;
+
+    if (recentActions && recentActions.total > 0) {
+      // Check tool usage in recent responses
+      const toolUsage = db.prepare(`
+        SELECT COUNT(*) as total,
+          SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as successes
+        FROM soul_tool_usage
+        WHERE created_at > datetime('now', '-24 hours')
+      `).get() as any;
+
+      const toolCallRate = toolUsage?.total > 0
+        ? `${toolUsage.total} tool calls (${((toolUsage.successes / toolUsage.total) * 100).toFixed(0)}% success)`
+        : "0 tool calls in 24h";
+
+      diagnostics.push({
+        category: "action_effectiveness",
+        status: toolUsage?.total === 0 && recentActions.total > 3 ? "warning" : "ok",
+        detail: `${recentActions.total} requests in 24h. System1: ${recentActions.system1}, System2: ${recentActions.system2}. ${toolCallRate}`,
+      });
+
+      if (toolUsage?.total === 0 && recentActions.total > 3) {
+        recommendations.push("Soul processed requests but used 0 tools in 24h. It may be 'talking instead of doing'. Check tool routing and LLM tool-calling capability.");
+      }
+    } else {
+      diagnostics.push({ category: "action_effectiveness", status: "ok", detail: "No recent activity" });
+    }
+  } catch {
+    diagnostics.push({ category: "action_effectiveness", status: "ok", detail: "No metrics data" });
+  }
+
+  // ── 6. MT5 Bridge ──
+  try {
+    const mt5Engine = await import("./mt5-engine.js");
+    if (mt5Engine.connectMt5) {
+      const result = await mt5Engine.connectMt5();
+      diagnostics.push({
+        category: "mt5_bridge",
+        status: result.success ? "ok" : "warning",
+        detail: result.message,
+      });
+    }
+  } catch (e: any) {
+    diagnostics.push({ category: "mt5_bridge", status: "warning", detail: `MT5 check: ${e.message.substring(0, 80)}` });
+  }
+
+  // ── 7. Model Cascade ──
+  try {
+    const { buildCascade } = await import("./model-router.js");
+    const cascade = buildCascade();
+    if (cascade) {
+      diagnostics.push({
+        category: "model_cascade",
+        status: "ok",
+        detail: `Simple: ${cascade.simple.label} | Medium: ${cascade.medium.label} | Complex: ${cascade.complex.label}`,
+      });
+    } else {
+      diagnostics.push({ category: "model_cascade", status: "warning", detail: "No cascade built — using single model for everything" });
+    }
+  } catch (e: any) {
+    diagnostics.push({ category: "model_cascade", status: "warning", detail: `Cascade check failed: ${e.message}` });
+  }
+
+  // Check 9: Vector Embeddings
+  try {
+    const { getEmbeddingStats } = await import("../memory/embeddings.js");
+    const stats = getEmbeddingStats();
+    if (!stats.provider) {
+      diagnostics.push({ category: "vector_embeddings", status: "warning", detail: "No embedding provider — semantic search using TF-IDF fallback" });
+    } else if (stats.coverage < 50) {
+      diagnostics.push({ category: "vector_embeddings", status: "warning", detail: `${stats.provider}/${stats.model} — only ${stats.coverage}% coverage (${stats.embeddedMemories}/${stats.totalMemories})` });
+    } else {
+      diagnostics.push({ category: "vector_embeddings", status: "ok", detail: `${stats.provider}/${stats.model} — ${stats.coverage}% coverage (${stats.embeddedMemories}/${stats.totalMemories})` });
+    }
+  } catch (e: any) {
+    diagnostics.push({ category: "vector_embeddings", status: "warning", detail: `Embedding check failed: ${e.message}` });
+  }
+
+  // Overall status
+  const hasCritical = diagnostics.some(d => d.status === "critical");
+  const hasWarning = diagnostics.some(d => d.status === "warning");
+
+  // Log the diagnostic run
+  logHeal("self_diagnostic", `Ran ${diagnostics.length} checks`, `${diagnostics.filter(d => d.status === "ok").length} ok, ${diagnostics.filter(d => d.status === "warning").length} warnings, ${diagnostics.filter(d => d.status === "critical").length} critical`, !hasCritical);
+
+  return {
+    timestamp: new Date().toISOString(),
+    overallStatus: hasCritical ? "critical" : hasWarning ? "degraded" : "healthy",
+    diagnostics,
+    autoFixes,
+    recommendations,
+  };
+}
+
+/**
+ * Format diagnostic report for human reading
+ */
+export function formatDiagnosticReport(report: SelfDiagnosticReport): string {
+  const statusEmoji = { healthy: "🟢", degraded: "🟡", critical: "🔴" };
+  const checkEmoji = { ok: "✅", warning: "⚠️", critical: "❌" };
+
+  const lines = [
+    `🧠 Soul Self-Diagnostic Report`,
+    `Status: ${statusEmoji[report.overallStatus]} ${report.overallStatus.toUpperCase()}`,
+    `Time: ${report.timestamp}`,
+    "",
+  ];
+
+  for (const d of report.diagnostics) {
+    lines.push(`${checkEmoji[d.status]} ${d.category}: ${d.detail}`);
+    if (d.autoFix) lines.push(`  🔧 Auto-fixed: ${d.autoFix}`);
+  }
+
+  if (report.autoFixes.length > 0) {
+    lines.push("", "🔧 Auto-fixes applied:");
+    for (const fix of report.autoFixes) lines.push(`  - ${fix}`);
+  }
+
+  if (report.recommendations.length > 0) {
+    lines.push("", "💡 Recommendations:");
+    for (const rec of report.recommendations) lines.push(`  - ${rec}`);
+  }
+
+  return lines.join("\n");
+}

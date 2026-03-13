@@ -2,6 +2,7 @@ import { getDb, getRawDb } from "../db/index.js";
 import { memories } from "../db/schema.js";
 import { eq, desc, and, sql, count } from "drizzle-orm";
 import { TfIdfIndex } from "./tfidf.js";
+import { embedText, storeEmbedding, hybridVectorSearch, getEmbeddingProvider, type HybridResult } from "./embeddings.js";
 
 // Semantic search index — rebuilt on first search, invalidated periodically
 let _tfidfIndex: TfIdfIndex | null = null;
@@ -50,6 +51,13 @@ export async function remember(input: RememberInput): Promise<MemoryEntry> {
     _tfidfIndex.add(result.id, `${input.content} ${(input.tags || []).join(" ")}`);
   }
 
+  // Embed at write time (async, non-blocking)
+  if (getEmbeddingProvider()) {
+    embedText(`${input.content} ${(input.tags || []).join(" ")}`).then(vec => {
+      if (vec) storeEmbedding(result.id, vec);
+    }).catch(() => {});
+  }
+
   return mapRow(result);
 }
 
@@ -78,14 +86,38 @@ export async function search(
 }
 
 /**
- * Hybrid search: FTS5 keyword + TF-IDF semantic re-ranking
+ * Hybrid search: Vector embeddings (70%) + FTS5 (30%) when available,
+ * falls back to FTS5 (60%) + TF-IDF (40%) when no embedding provider.
  * This is what makes Soul smarter than simple keyword search.
  */
 export async function hybridSearch(
   query: string,
   limit: number = 10
 ): Promise<MemoryEntry[]> {
-  // Build TF-IDF index if not ready or stale
+  // ── Vector path: use dense embeddings when available ──
+  if (getEmbeddingProvider()) {
+    try {
+      const vectorResults = await hybridVectorSearch(query, limit);
+      if (vectorResults.length > 0) {
+        // Fetch full memory entries for the results
+        const rawDb = getRawDb();
+        const ids = vectorResults.map(r => r.memoryId);
+        const placeholders = ids.map(() => "?").join(",");
+        const rows = rawDb
+          .prepare(`SELECT * FROM memories WHERE id IN (${placeholders}) AND is_active = 1`)
+          .all(...ids) as any[];
+        const rowMap = new Map(rows.map(r => [r.id, r]));
+        // Return in score order
+        return vectorResults
+          .filter(vr => rowMap.has(vr.memoryId))
+          .map(vr => mapRow(rowMap.get(vr.memoryId)));
+      }
+    } catch (e: any) {
+      console.error(`[Memory] Vector search failed, falling back to TF-IDF: ${e.message}`);
+    }
+  }
+
+  // ── Fallback path: FTS5 + TF-IDF (original approach) ──
   const now = Date.now();
   if (!_tfidfBuilt || now - _tfidfLastBuilt > TFIDF_REBUILD_INTERVAL_MS) {
     _tfidfIndex = new TfIdfIndex();
@@ -157,7 +189,28 @@ export async function hybridSearchWithScores(
   query: string,
   limit: number = 10
 ): Promise<ScoredMemoryEntry[]> {
-  // Build TF-IDF index if not ready or stale
+  // ── Vector path: use dense embeddings when available ──
+  if (getEmbeddingProvider()) {
+    try {
+      const vectorResults = await hybridVectorSearch(query, limit);
+      if (vectorResults.length > 0) {
+        const rawDb = getRawDb();
+        const ids = vectorResults.map(r => r.memoryId);
+        const placeholders = ids.map(() => "?").join(",");
+        const rows = rawDb
+          .prepare(`SELECT * FROM memories WHERE id IN (${placeholders}) AND is_active = 1`)
+          .all(...ids) as any[];
+        const rowMap = new Map(rows.map(r => [r.id, r]));
+        return vectorResults
+          .filter(vr => rowMap.has(vr.memoryId))
+          .map(vr => ({ ...mapRow(rowMap.get(vr.memoryId)), score: vr.score }));
+      }
+    } catch (e: any) {
+      console.error(`[Memory] Vector search with scores failed, falling back: ${e.message}`);
+    }
+  }
+
+  // ── Fallback path: FTS5 + TF-IDF ──
   const now2 = Date.now();
   if (!_tfidfBuilt || now2 - _tfidfLastBuilt > TFIDF_REBUILD_INTERVAL_MS) {
     _tfidfIndex = new TfIdfIndex();
@@ -191,7 +244,6 @@ export async function hybridSearchWithScores(
     allIds.add(ftsResults[i].id);
   }
 
-  // Batch fetch semantic-only results to avoid N+1 queries
   const semanticOnlyIds = semanticResults
     .filter(sem => !allIds.has(sem.id as number))
     .map(sem => sem.id as number);

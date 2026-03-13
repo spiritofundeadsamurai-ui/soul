@@ -440,6 +440,15 @@ async function executeJob(job: ScheduledJob): Promise<void> {
       case "health":
         const health = await healthCheck();
         output = `Status: ${health.status}, checks: ${health.checks.length}`;
+        // Also run deep self-diagnostics on health checks
+        try {
+          const { runSelfDiagnostics } = await import("./self-healing.js");
+          const diag = await runSelfDiagnostics();
+          if (diag.overallStatus !== "healthy") {
+            output += ` | Self-Diag: ${diag.overallStatus} (${diag.diagnostics.filter(d => d.status !== "ok").map(d => d.category).join(", ")})`;
+            if (diag.autoFixes.length > 0) output += ` | Auto-fixed: ${diag.autoFixes.join("; ")}`;
+          }
+        } catch { /* self-diagnostic failure is non-critical */ }
         break;
       case "briefing":
         output = await generateBriefing();

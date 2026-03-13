@@ -5,10 +5,10 @@
  * Stores credentials encrypted, tracks prices, generates trading signals.
  */
 
-import { spawn, ChildProcess } from "child_process";
+import { spawn, exec, execSync, ChildProcess } from "child_process";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
-import { existsSync } from "fs";
+import { existsSync, readdirSync } from "fs";
 import { getRawDb } from "../db/index.js";
 import { encryptSecret, safeDecryptSecret } from "./security.js";
 
@@ -202,7 +202,85 @@ export function getMt5Config(): { account: string; password: string; server: str
 }
 
 /**
- * Connect to MT5 — spawn Python bridge and login
+ * Auto-detect MT5 terminal executable on the system
+ */
+function findMt5Terminal(): string | null {
+  // Common installation paths on Windows
+  const searchDirs = [
+    "C:\\Program Files",
+    "C:\\Program Files (x86)",
+    "D:\\Program Files",
+    process.env.LOCALAPPDATA || "",
+    join(process.env.USERPROFILE || "", "AppData", "Roaming", "MetaQuotes", "Terminal"),
+  ].filter(Boolean);
+
+  const exeNames = ["terminal64.exe", "terminal.exe"];
+
+  for (const dir of searchDirs) {
+    try {
+      const entries = readdirSync(dir);
+      for (const entry of entries) {
+        if (/metatrader/i.test(entry)) {
+          for (const exe of exeNames) {
+            const fullPath = join(dir, entry, exe);
+            if (existsSync(fullPath)) return fullPath;
+          }
+        }
+      }
+    } catch { /* dir not accessible */ }
+  }
+  return null;
+}
+
+/**
+ * Launch MT5 terminal if not already running, then wait for it to be ready
+ */
+async function autoLaunchMt5(): Promise<{ launched: boolean; message: string }> {
+  // Check if MT5 is already running
+  try {
+    // execSync already imported at top
+    const tasklist = execSync("tasklist /FI \"IMAGENAME eq terminal64.exe\" /NH", { encoding: "utf-8" });
+    if (tasklist.includes("terminal64.exe")) {
+      return { launched: true, message: "MT5 already running" };
+    }
+  } catch { /* ok */ }
+
+  // Find MT5 executable
+  const config = getMt5Config();
+  let mt5Exe = config?.mt5Path || findMt5Terminal();
+
+  if (!mt5Exe || !existsSync(mt5Exe)) {
+    return { launched: false, message: "ไม่พบโปรแกรม MetaTrader 5 บนเครื่องนี้" };
+  }
+
+  // Launch MT5
+  console.log(`[MT5] Auto-launching: ${mt5Exe}`);
+  try {
+    // exec already imported at top
+    // Use /portable to avoid disrupting existing installations
+    exec(`"${mt5Exe}"`, { windowsHide: false });
+
+    // Wait for MT5 to initialize (up to 15 seconds)
+    for (let i = 0; i < 15; i++) {
+      await new Promise(r => setTimeout(r, 1000));
+      try {
+        // execSync already imported at top
+        const check = execSync("tasklist /FI \"IMAGENAME eq terminal64.exe\" /NH", { encoding: "utf-8" });
+        if (check.includes("terminal64.exe")) {
+          // Give MT5 a moment to fully load
+          await new Promise(r => setTimeout(r, 3000));
+          return { launched: true, message: `เปิด MT5 แล้ว: ${mt5Exe}` };
+        }
+      } catch { /* keep waiting */ }
+    }
+    return { launched: false, message: "เปิด MT5 แล้วแต่ไม่ตอบสนอง (timeout 15s)" };
+  } catch (err: any) {
+    return { launched: false, message: `ไม่สามารถเปิด MT5: ${err.message}` };
+  }
+}
+
+/**
+ * Connect to MT5 — auto-launch if needed, spawn Python bridge and login
  */
 export async function connectMt5(): Promise<{ success: boolean; message: string; account?: any }> {
   if (bridgeProcess && bridgeReady) {
@@ -220,6 +298,10 @@ export async function connectMt5(): Promise<{ success: boolean; message: string;
   if (!config) {
     return { success: false, message: "No MT5 config found. Use soul_mt5_setup first." };
   }
+
+  // AUTO-LAUNCH: If MT5 is not running, try to open it automatically
+  const launch = await autoLaunchMt5();
+  console.log(`[MT5] Auto-launch: ${launch.message}`);
 
   const bridgePath = getBridgePath();
 
@@ -319,9 +401,24 @@ export async function disconnectMt5(): Promise<void> {
 }
 
 /**
+ * Ensure MT5 is connected — auto-launch + auto-connect if needed
+ * Every MT5 function should call this first instead of assuming bridge is ready
+ */
+async function ensureConnected(): Promise<void> {
+  if (bridgeProcess && bridgeReady) {
+    try { await sendToBridge("ping"); return; } catch { /* bridge died */ }
+  }
+  const result = await connectMt5();
+  if (!result.success) {
+    throw new Error(`MT5 ไม่พร้อม: ${result.message}`);
+  }
+}
+
+/**
  * Get real-time price
  */
 export async function getPrice(symbol?: string): Promise<any> {
+  await ensureConnected();
   const config = getMt5Config();
   const sym = symbol || config?.defaultSymbol || "XAUUSD";
   const result = await sendToBridge("get_price", { symbol: sym });
@@ -341,6 +438,7 @@ export async function getPrice(symbol?: string): Promise<any> {
  * Get candle data
  */
 export async function getCandles(symbol?: string, timeframe?: string, count?: number): Promise<any> {
+  await ensureConnected();
   const config = getMt5Config();
   return sendToBridge("get_candles", {
     symbol: symbol || config?.defaultSymbol || "XAUUSD",
@@ -353,6 +451,7 @@ export async function getCandles(symbol?: string, timeframe?: string, count?: nu
  * Get account info
  */
 export async function getAccountInfo(): Promise<any> {
+  await ensureConnected();
   return sendToBridge("get_account", {});
 }
 
@@ -360,6 +459,7 @@ export async function getAccountInfo(): Promise<any> {
  * Get open positions
  */
 export async function getPositions(symbol?: string): Promise<any> {
+  await ensureConnected();
   return sendToBridge("get_positions", symbol ? { symbol } : {});
 }
 
@@ -461,6 +561,7 @@ export async function analyzeChart(symbol?: string, timeframe?: string): Promise
   signals: Signal[];
   indicators: { sma9: number; sma21: number; rsi14: number; support: number; resistance: number };
 }> {
+  await ensureConnected();
   const config = getMt5Config();
   const sym = symbol || config?.defaultSymbol || "XAUUSD";
   const tf = timeframe || "H1";
@@ -617,6 +718,193 @@ export function stopMonitor(): { success: boolean; message: string } {
     return { success: true, message: "Monitor stopped." };
   }
   return { success: false, message: "No monitor running." };
+}
+
+// ─── Price Level Alerts ───
+// Real alerts that check specific price levels and notify via Telegram
+
+interface PriceAlert {
+  id: number;
+  symbol: string;
+  targetPrice: number;
+  direction: "above" | "below";
+  message: string;
+  telegramChannel: string;
+  triggered: boolean;
+  createdAt: string;
+}
+
+let priceAlertInterval: ReturnType<typeof setInterval> | null = null;
+const ALERT_CHECK_INTERVAL = 30_000; // Check every 30 seconds
+
+function ensurePriceAlertTable() {
+  const db = getRawDb();
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS soul_price_alerts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      symbol TEXT NOT NULL DEFAULT 'XAUUSD',
+      target_price REAL NOT NULL,
+      direction TEXT NOT NULL,
+      message TEXT NOT NULL DEFAULT '',
+      telegram_channel TEXT NOT NULL DEFAULT '',
+      triggered INTEGER NOT NULL DEFAULT 0,
+      triggered_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+}
+
+/**
+ * Add a price level alert — will notify via Telegram when price crosses the level
+ */
+export function addPriceAlert(input: {
+  symbol?: string;
+  targetPrice: number;
+  direction: "above" | "below";
+  message?: string;
+  telegramChannel?: string;
+}): { success: boolean; alertId: number; message: string } {
+  ensurePriceAlertTable();
+  const db = getRawDb();
+
+  // Find telegram channel if not provided
+  let channel = input.telegramChannel || "";
+  if (!channel) {
+    try {
+      const ch = db.prepare("SELECT name FROM soul_channels WHERE channel_type = 'telegram' AND is_active = 1 LIMIT 1").get() as any;
+      if (ch) channel = ch.name;
+    } catch { /* ok */ }
+  }
+
+  const row = db.prepare(`
+    INSERT INTO soul_price_alerts (symbol, target_price, direction, message, telegram_channel)
+    VALUES (?, ?, ?, ?, ?) RETURNING id
+  `).get(
+    input.symbol || "XAUUSD",
+    input.targetPrice,
+    input.direction,
+    input.message || `ราคา ${input.symbol || "XAUUSD"} ถึง ${input.targetPrice}`,
+    channel,
+  ) as any;
+
+  // Auto-start alert checker if not running
+  startPriceAlertChecker();
+
+  const dirLabel = input.direction === "above" ? "ยืนเหนือ" : "หลุด";
+  return {
+    success: true,
+    alertId: row.id,
+    message: `✅ ตั้งเตือนจริงแล้ว: ${input.symbol || "XAUUSD"} ${dirLabel} ${input.targetPrice} → แจ้งเตือนทาง Telegram (เช็คทุก 30 วินาที)`,
+  };
+}
+
+/**
+ * List active (untriggered) price alerts
+ */
+export function listPriceAlerts(): PriceAlert[] {
+  ensurePriceAlertTable();
+  const db = getRawDb();
+  return db.prepare("SELECT * FROM soul_price_alerts WHERE triggered = 0 ORDER BY created_at DESC").all() as any[];
+}
+
+/**
+ * Cancel a price alert
+ */
+export function cancelPriceAlert(alertId: number): { success: boolean; message: string } {
+  ensurePriceAlertTable();
+  const db = getRawDb();
+  const result = db.prepare("DELETE FROM soul_price_alerts WHERE id = ? AND triggered = 0").run(alertId);
+  if (result.changes > 0) return { success: true, message: `ยกเลิกเตือน #${alertId} แล้ว` };
+  return { success: false, message: `ไม่พบเตือน #${alertId}` };
+}
+
+/**
+ * Start the background price alert checker
+ */
+function startPriceAlertChecker() {
+  if (priceAlertInterval) return; // Already running
+
+  console.log("[MT5] Price alert checker started (every 30s)");
+  priceAlertInterval = setInterval(async () => {
+    try {
+      ensurePriceAlertTable();
+      const db = getRawDb();
+      const alerts = db.prepare("SELECT * FROM soul_price_alerts WHERE triggered = 0").all() as any[];
+
+      if (alerts.length === 0) {
+        // No active alerts — stop checking
+        if (priceAlertInterval) {
+          clearInterval(priceAlertInterval);
+          priceAlertInterval = null;
+          console.log("[MT5] Price alert checker stopped (no active alerts)");
+        }
+        return;
+      }
+
+      // Group alerts by symbol to minimize API calls
+      const symbolAlerts = new Map<string, any[]>();
+      for (const alert of alerts) {
+        const existing = symbolAlerts.get(alert.symbol) || [];
+        existing.push(alert);
+        symbolAlerts.set(alert.symbol, existing);
+      }
+
+      for (const [symbol, alertList] of symbolAlerts) {
+        try {
+          await ensureConnected();
+          const price = await getPrice(symbol);
+          const currentBid = price.bid;
+
+          for (const alert of alertList) {
+            let triggered = false;
+            if (alert.direction === "above" && currentBid >= alert.target_price) triggered = true;
+            if (alert.direction === "below" && currentBid <= alert.target_price) triggered = true;
+
+            if (triggered) {
+              // Mark as triggered
+              db.prepare("UPDATE soul_price_alerts SET triggered = 1, triggered_at = datetime('now') WHERE id = ?").run(alert.id);
+
+              const dirEmoji = alert.direction === "above" ? "🔺" : "🔻";
+              const dirLabel = alert.direction === "above" ? "ยืนเหนือ" : "หลุดต่ำกว่า";
+              const alertMsg = [
+                `🔔 Price Alert!`,
+                `${dirEmoji} ${symbol} ${dirLabel} ${alert.target_price}`,
+                `💰 ราคาปัจจุบัน: ${currentBid}`,
+                alert.message ? `📝 ${alert.message}` : "",
+              ].filter(Boolean).join("\n");
+
+              console.log(`[MT5] 🔔 Alert triggered: ${symbol} ${alert.direction} ${alert.target_price} (current: ${currentBid})`);
+
+              // Send Telegram notification
+              if (alert.telegram_channel) {
+                try {
+                  const { sendMessage } = await import("./channels.js");
+                  await sendMessage(alert.telegram_channel, alertMsg);
+                } catch (e: any) {
+                  console.error("[MT5] Alert send failed:", e.message);
+                }
+              }
+
+              // Also store in memory
+              try {
+                const { remember } = await import("../memory/memory-engine.js");
+                await remember({
+                  content: `Price alert triggered: ${symbol} ${dirLabel} ${alert.target_price}. Current: ${currentBid}`,
+                  type: "knowledge",
+                  tags: ["price-alert", "mt5", symbol.toLowerCase()],
+                  source: "price-alert",
+                });
+              } catch { /* ok */ }
+            }
+          }
+        } catch (e: any) {
+          console.error(`[MT5] Alert check failed for ${symbol}:`, e.message);
+        }
+      }
+    } catch (e: any) {
+      console.error("[MT5] Alert checker error:", e.message);
+    }
+  }, ALERT_CHECK_INTERVAL);
 }
 
 /**
@@ -810,6 +1098,7 @@ export async function multiTimeframeAnalysis(symbol?: string, timeframes?: strin
   correlation: { aligned: boolean; direction: string; confidence: number; summary: string };
   signals: Signal[];
 }> {
+  await ensureConnected();
   const config = getMt5Config();
   const sym = symbol || config?.defaultSymbol || "XAUUSD";
   const tfs = timeframes || ["M15", "H1", "H4", "D1"];

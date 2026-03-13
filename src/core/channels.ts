@@ -162,6 +162,10 @@ export async function sendMessage(
     deliveryStatus = await slackSend(config.botToken, config.channelId, content);
   } else if (channel.channel_type === "discord" && config.botToken && config.channelId) {
     deliveryStatus = await discordSend(config.botToken, config.channelId, content);
+  } else if (channel.channel_type === "whatsapp" && config.defaultJid) {
+    deliveryStatus = await whatsappSend(config.defaultJid, content);
+  } else if (channel.channel_type === "line" && config.channelAccessToken && config.defaultUserId) {
+    deliveryStatus = await lineSend(config.channelAccessToken, config.defaultUserId, content);
   }
 
   // Update status
@@ -243,6 +247,18 @@ async function telegramSend(botToken: string, chatId: string, text: string): Pro
     console.error(`[Telegram] Send failed: ${e.message}`);
     return "failed";
   }
+}
+
+/** Send "typing..." indicator to Telegram chat */
+async function telegramTyping(botToken: string, chatId: string): Promise<void> {
+  try {
+    await fetch(`https://api.telegram.org/bot${botToken}/sendChatAction`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, action: "typing" }),
+      signal: AbortSignal.timeout(5000),
+    });
+  } catch { /* non-critical */ }
 }
 
 /** Call any Telegram Bot API method */
@@ -559,7 +575,26 @@ async function pollTelegramLoop(
         // Process with Soul's brain
         let reply: string;
         try {
-          const { runAgentLoop } = await import("./agent-loop.js");
+          const { runAgentLoop, isActionMessage } = await import("./agent-loop.js");
+
+          // Send "typing..." indicator so user knows Soul is working
+          await telegramTyping(botToken, chatId);
+
+          // For action messages, send a quick status message
+          const isAction = isActionMessage(text);
+          let statusMsgId: number | null = null;
+          if (isAction) {
+            try {
+              const statusRes = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ chat_id: chatId, text: "🔄 กำลังทำ..." }),
+                signal: AbortSignal.timeout(5000),
+              });
+              const statusData = await statusRes.json() as any;
+              if (statusData.ok) statusMsgId = statusData.result.message_id;
+            } catch { /* ok */ }
+          }
 
           // Build conversation history from recent messages for context
           let conversationHistory: { role: string; content: string }[] = [];
@@ -578,14 +613,48 @@ async function pollTelegramLoop(
             }));
           } catch { /* ok — no history */ }
 
+          // Keep sending "typing..." every 4s while agent loop runs
+          const typingInterval = setInterval(() => telegramTyping(botToken, chatId), 4000);
+
           const result = await runAgentLoop(text, {
             systemPrompt: undefined, // Use default system prompt with full MT5/Network/Self-Dev rules
             history: conversationHistory as any[],
             maxIterations: 5,
           });
+
+          clearInterval(typingInterval);
+          console.log(`[Telegram] model=${result.model} provider=${result.provider} tools=[${result.toolsUsed.join(",")}] reply_len=${result.reply?.length}`);
+
+          // Delete the "🔄 กำลังทำ..." status message
+          if (statusMsgId) {
+            try {
+              await fetch(`https://api.telegram.org/bot${botToken}/deleteMessage`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ chat_id: chatId, message_id: statusMsgId }),
+                signal: AbortSignal.timeout(5000),
+              });
+            } catch { /* ok */ }
+          }
+
+          // Build reply with tool usage indicator
           reply = result.reply || "ขอโทษครับ ไม่สามารถประมวลผลได้";
+          if (result.toolsUsed.length > 0) {
+            const toolEmojis: Record<string, string> = {
+              soul_mt5_price: "💰", soul_mt5_analyze: "📊", soul_mt5_multi_analyze: "📊",
+              soul_mt5_price_alert: "🔔", soul_mt5_smart_monitor: "📡", soul_mt5_monitor: "📡",
+              soul_mt5_positions: "📈", soul_mt5_account: "💳", soul_mt5_candles: "🕯️",
+              soul_remember: "🧠", soul_search: "🔍", soul_web_search: "🌐",
+              soul_note: "📝", soul_remind: "⏰", soul_read_file: "📄",
+            };
+            const usedIcons = result.toolsUsed
+              .map(t => toolEmojis[t] || "⚡")
+              .filter((v, i, a) => a.indexOf(v) === i) // unique
+              .join("");
+            reply = `${usedIcons} ${reply}`;
+          }
         } catch (err: any) {
-          reply = `ขอโทษครับ เกิดข้อผิดพลาด: ${err.message?.substring(0, 100) || "unknown"}`;
+          reply = `❌ ขอโทษครับ เกิดข้อผิดพลาด: ${err.message?.substring(0, 100) || "unknown"}`;
         }
 
         // Strip <think>...</think> tags (Qwen3 thinking output)
@@ -1428,6 +1497,471 @@ export async function checkForUpdate(): Promise<{
     latestVersion,
     updateAvailable: currentVersion !== latestVersion && currentVersion !== "unknown",
   };
+}
+
+// ============================================
+// WHATSAPP — Via @whiskeysockets/baileys (QR auth)
+// ============================================
+
+let _waSocket: any = null;
+let _waConnected = false;
+let _waQrCode: string | null = null;
+let _waChannelId: number | null = null;
+let _waChannelName: string | null = null;
+
+/** Send a message via WhatsApp */
+async function whatsappSend(jid: string, text: string): Promise<string> {
+  if (!_waSocket || !_waConnected) return "not_connected";
+  try {
+    await _waSocket.sendMessage(jid, { text });
+    return "delivered";
+  } catch (e: any) {
+    console.error(`[WhatsApp] Send failed: ${e.message}`);
+    return "failed";
+  }
+}
+
+/**
+ * Auto-setup WhatsApp — Uses Baileys to connect to WhatsApp Web
+ * 1. Initialize connection (QR code generated)
+ * 2. User scans QR on phone
+ * 3. Connection established → auto-listen for messages
+ */
+export async function whatsappAutoSetup(channelName?: string): Promise<{
+  success: boolean;
+  channelName: string;
+  qrCode: string | null;
+  message: string;
+}> {
+  const name = channelName || "whatsapp-main";
+
+  if (_waConnected) {
+    return { success: true, channelName: name, qrCode: null, message: "WhatsApp is already connected." };
+  }
+
+  try {
+    const baileys = await import("@whiskeysockets/baileys");
+    const { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = baileys;
+    const { join: pathJoin } = await import("path");
+    const { mkdirSync } = await import("fs");
+
+    // Auth state stored in soul data directory
+    const authDir = pathJoin(process.cwd(), ".soul-data", "whatsapp-auth");
+    mkdirSync(authDir, { recursive: true });
+
+    const { state, saveCreds } = await useMultiFileAuthState(authDir);
+    const { version } = await fetchLatestBaileysVersion();
+
+    const sock = makeWASocket({
+      version,
+      auth: state,
+      printQRInTerminal: true,
+      browser: ["Soul AI", "Chrome", "1.0.0"],
+      generateHighQualityLinkPreview: false,
+    });
+
+    _waSocket = sock;
+
+    // Handle connection updates
+    sock.ev.on("connection.update", async (update: any) => {
+      const { connection, lastDisconnect, qr } = update;
+
+      if (qr) {
+        _waQrCode = qr;
+        console.log("[WhatsApp] QR code generated — scan with your phone");
+      }
+
+      if (connection === "close") {
+        _waConnected = false;
+        const statusCode = (lastDisconnect?.error as any)?.output?.statusCode;
+        if (statusCode !== DisconnectReason.loggedOut) {
+          console.log("[WhatsApp] Reconnecting...");
+          setTimeout(() => whatsappAutoSetup(name), 3000);
+        } else {
+          console.log("[WhatsApp] Logged out. Remove auth folder to re-connect.");
+        }
+      } else if (connection === "open") {
+        _waConnected = true;
+        _waQrCode = null;
+        _waChannelName = name;
+        console.log("[WhatsApp] Connected!");
+
+        // Register channel
+        const channel = await addChannel({
+          name,
+          channelType: "whatsapp",
+          config: { connected: true, connectedAt: new Date().toISOString() },
+        });
+        _waChannelId = channel.id;
+
+        await remember({
+          content: `[WhatsApp] Connected via Baileys as channel "${name}".`,
+          type: "knowledge",
+          tags: ["whatsapp", "setup", "channel"],
+          source: "channels-engine",
+        });
+      }
+    });
+
+    // Save credentials on update
+    sock.ev.on("creds.update", saveCreds);
+
+    // Handle incoming messages
+    sock.ev.on("messages.upsert", async (m: any) => {
+      if (!m.messages?.length) return;
+
+      for (const msg of m.messages) {
+        if (msg.key.fromMe) continue; // Skip own messages
+        const text = msg.message?.conversation
+          || msg.message?.extendedTextMessage?.text
+          || "";
+        if (!text.trim()) continue;
+
+        const jid = msg.key.remoteJid || "";
+        const pushName = msg.pushName || "User";
+
+        // Log inbound
+        const rawDb = getRawDb();
+        if (_waChannelId) {
+          rawDb
+            .prepare(
+              `INSERT INTO soul_messages (channel_id, direction, content, metadata, status)
+               VALUES (?, 'inbound', ?, ?, 'received')`
+            )
+            .run(_waChannelId, text, JSON.stringify({ from: pushName, jid }));
+        }
+
+        // Process with Soul's brain
+        let reply: string;
+        try {
+          const { runAgentLoop } = await import("./agent-loop.js");
+
+          let conversationHistory: { role: string; content: string }[] = [];
+          if (_waChannelId) {
+            try {
+              const recentMsgs = rawDb
+                .prepare(
+                  `SELECT direction, content FROM soul_messages
+                   WHERE channel_id = ? AND content IS NOT NULL AND content != ''
+                   ORDER BY created_at DESC LIMIT 20`
+                )
+                .all(_waChannelId) as any[];
+              conversationHistory = recentMsgs.reverse().map((r: any) => ({
+                role: r.direction === "inbound" ? "user" : "assistant",
+                content: r.content,
+              }));
+            } catch { /* ok */ }
+          }
+
+          const result = await runAgentLoop(text, {
+            systemPrompt: `You are Soul v${SOUL_VERSION}, an AI companion responding via WhatsApp to ${pushName}.
+RULES:
+1. When user writes in Thai → ALWAYS reply in Thai.
+2. Keep responses concise (1-3 paragraphs max).
+3. You have 308 tools. NEVER say "ทำไม่ได้".
+4. NEVER output <think> tags. Send ONE reply only.
+5. Use plain text — WhatsApp doesn't support rich markdown.`,
+            history: conversationHistory as any[],
+            maxIterations: 5,
+          });
+          reply = result.reply || "ขอโทษครับ ไม่สามารถประมวลผลได้";
+        } catch (err: any) {
+          reply = `❌ Error: ${err.message?.substring(0, 100) || "unknown"}`;
+        }
+
+        reply = reply.replace(/<think>[\s\S]*?<\/think>\s*/g, "").trim();
+        if (!reply) reply = "ได้เลยครับ";
+
+        // Send reply
+        const status = await whatsappSend(jid, reply);
+
+        // Log outbound
+        if (_waChannelId) {
+          rawDb
+            .prepare(
+              `INSERT INTO soul_messages (channel_id, direction, content, metadata, status)
+               VALUES (?, 'outbound', ?, ?, ?)`
+            )
+            .run(_waChannelId, reply, JSON.stringify({ jid, inReplyTo: pushName }), status);
+        }
+
+        await remember({
+          content: `[WhatsApp] ${pushName}: "${text.substring(0, 80)}" → Soul: "${reply.substring(0, 80)}"`,
+          type: "conversation",
+          tags: ["whatsapp", "chat", name],
+          source: "whatsapp-baileys",
+        });
+      }
+    });
+
+    return {
+      success: true,
+      channelName: name,
+      qrCode: _waQrCode,
+      message: _waConnected
+        ? "WhatsApp connected! Soul is listening."
+        : "WhatsApp initializing — scan the QR code printed in the terminal with your phone (WhatsApp > Linked Devices > Link a Device).",
+    };
+  } catch (e: any) {
+    return {
+      success: false,
+      channelName: channelName || "whatsapp-main",
+      qrCode: null,
+      message: `WhatsApp setup failed: ${e.message}`,
+    };
+  }
+}
+
+/** Get WhatsApp connection status */
+export function getWhatsAppStatus(): {
+  connected: boolean;
+  qrCode: string | null;
+  channelName: string | null;
+} {
+  return {
+    connected: _waConnected,
+    qrCode: _waQrCode,
+    channelName: _waChannelName,
+  };
+}
+
+/** Disconnect WhatsApp */
+export function disconnectWhatsApp(): { success: boolean; message: string } {
+  if (_waSocket) {
+    try { _waSocket.end(undefined); } catch { /* ok */ }
+    _waSocket = null;
+    _waConnected = false;
+    _waQrCode = null;
+    return { success: true, message: "WhatsApp disconnected." };
+  }
+  return { success: false, message: "WhatsApp is not connected." };
+}
+
+// ============================================
+// LINE — Messaging API (webhook-based)
+// ============================================
+
+/** Send a LINE message via push/reply API */
+async function lineSend(channelToken: string, to: string, text: string, replyToken?: string): Promise<string> {
+  try {
+    // If we have a reply token (within 1 min of receiving), use reply API (free)
+    if (replyToken) {
+      const response = await fetch("https://api.line.me/v2/bot/message/reply", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${channelToken}`,
+        },
+        body: JSON.stringify({
+          replyToken,
+          messages: [{ type: "text", text }],
+        }),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (response.ok) return "delivered";
+    }
+
+    // Fallback to push API (costs message credits)
+    const response = await fetch("https://api.line.me/v2/bot/message/push", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${channelToken}`,
+      },
+      body: JSON.stringify({
+        to,
+        messages: [{ type: "text", text }],
+      }),
+      signal: AbortSignal.timeout(10000),
+    });
+    return response.ok ? "delivered" : "failed";
+  } catch (e: any) {
+    console.error(`[LINE] Send failed: ${e.message}`);
+    return "failed";
+  }
+}
+
+/**
+ * Auto-setup LINE — give Channel Access Token, Soul configures everything:
+ * 1. Validate the token with /v2/bot/info
+ * 2. Register the channel
+ * 3. Return webhook URL for user to configure in LINE Developers Console
+ */
+export async function lineAutoSetup(channelAccessToken: string, channelName?: string): Promise<{
+  success: boolean;
+  botName: string;
+  channelName: string;
+  webhookUrl: string;
+  message: string;
+}> {
+  // 1. Validate token
+  let botName = "Soul Bot";
+  try {
+    const response = await fetch("https://api.line.me/v2/bot/info", {
+      method: "GET",
+      headers: { Authorization: `Bearer ${channelAccessToken}` },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!response.ok) {
+      return { success: false, botName, channelName: "", webhookUrl: "", message: `LINE auth failed (${response.status}). Check your Channel Access Token.` };
+    }
+    const botInfo = await response.json() as any;
+    botName = botInfo.displayName || botInfo.basicId || "Soul Bot";
+  } catch (e: any) {
+    return { success: false, botName, channelName: "", webhookUrl: "", message: `LINE auth failed: ${e.message}` };
+  }
+
+  const name = channelName || `line-${botName.replace(/\s+/g, "-").toLowerCase()}`;
+  const port = parseInt(process.env.SOUL_PORT || "47779", 10);
+  const webhookUrl = `http://YOUR_SERVER:${port}/api/line/webhook`;
+
+  // 2. Register channel
+  await addChannel({
+    name,
+    channelType: "line",
+    config: { channelAccessToken, botName },
+  });
+
+  // 3. Remember
+  await remember({
+    content: `[LINE] Bot "${botName}" connected as channel "${name}". Webhook: ${webhookUrl}`,
+    type: "knowledge",
+    tags: ["line", "setup", "channel"],
+    source: "channels-engine",
+  });
+
+  return {
+    success: true,
+    botName,
+    channelName: name,
+    webhookUrl,
+    message: `LINE Bot "${botName}" connected as channel "${name}". Set this webhook URL in LINE Developers Console → Messaging API → Webhook URL: ${webhookUrl}`,
+  };
+}
+
+/**
+ * Handle incoming LINE webhook event
+ * LINE sends events to POST /api/line/webhook
+ */
+export async function handleLineWebhook(payload: any): Promise<{
+  statusCode: number;
+  body: any;
+}> {
+  const events = payload.events || [];
+
+  for (const event of events) {
+    if (event.type !== "message" || event.message?.type !== "text") continue;
+
+    const text = event.message.text || "";
+    const userId = event.source?.userId || "";
+    const replyToken = event.replyToken || "";
+
+    if (!text.trim()) continue;
+
+    // Find matching LINE channel
+    ensureChannelTables();
+    const rawDb = getRawDb();
+    const channels = rawDb
+      .prepare("SELECT * FROM soul_channels WHERE channel_type = 'line' AND is_active = 1")
+      .all() as any[];
+
+    if (channels.length === 0) {
+      return { statusCode: 200, body: {} };
+    }
+
+    const matchedChannel = channels[0]; // Use first active LINE channel
+    const config = JSON.parse(matchedChannel.config || "{}");
+
+    // Process async (LINE expects 200 within 1 second)
+    processLineInbound(matchedChannel, config, text, userId, replyToken).catch((err) => {
+      console.error("[LINE] Inbound processing error:", err.message);
+    });
+  }
+
+  return { statusCode: 200, body: {} };
+}
+
+/**
+ * Process an inbound LINE message — log it, run agent loop, reply
+ */
+async function processLineInbound(
+  channel: any,
+  config: any,
+  text: string,
+  userId: string,
+  replyToken: string
+) {
+  const rawDb = getRawDb();
+
+  if (isStopSignal(text)) {
+    await lineSend(config.channelAccessToken, userId, "Soul stopped listening.");
+    return;
+  }
+
+  // Log inbound
+  rawDb
+    .prepare(
+      `INSERT INTO soul_messages (channel_id, direction, content, metadata, status)
+       VALUES (?, 'inbound', ?, ?, 'received')`
+    )
+    .run(channel.id, text, JSON.stringify({ from: userId }));
+
+  // Process with Soul's brain
+  let reply: string;
+  try {
+    const { runAgentLoop } = await import("./agent-loop.js");
+
+    let conversationHistory: { role: string; content: string }[] = [];
+    try {
+      const recentMsgs = rawDb
+        .prepare(
+          `SELECT direction, content FROM soul_messages
+           WHERE channel_id = ? AND content IS NOT NULL AND content != ''
+           ORDER BY created_at DESC LIMIT 20`
+        )
+        .all(channel.id) as any[];
+      conversationHistory = recentMsgs.reverse().map((m: any) => ({
+        role: m.direction === "inbound" ? "user" : "assistant",
+        content: m.content,
+      }));
+    } catch { /* ok */ }
+
+    const result = await runAgentLoop(text, {
+      systemPrompt: `You are Soul v${SOUL_VERSION}, an AI companion responding via LINE to user.
+RULES:
+1. When user writes in Thai → ALWAYS reply in Thai.
+2. Keep responses concise (1-3 paragraphs max). LINE messages should be short.
+3. You have 308 tools. NEVER say "ทำไม่ได้".
+4. NEVER output <think> tags. Send ONE reply only.
+5. Use plain text — LINE basic accounts have limited formatting.`,
+      history: conversationHistory as any[],
+      maxIterations: 5,
+    });
+    reply = result.reply || "ขอโทษครับ ไม่สามารถประมวลผลได้";
+  } catch (err: any) {
+    reply = `❌ Error: ${err.message?.substring(0, 100) || "unknown"}`;
+  }
+
+  reply = reply.replace(/<think>[\s\S]*?<\/think>\s*/g, "").trim();
+  if (!reply) reply = "ได้เลยครับ";
+
+  // Send reply (try reply token first, then push)
+  const status = await lineSend(config.channelAccessToken, userId, reply, replyToken);
+
+  // Log outbound
+  rawDb
+    .prepare(
+      `INSERT INTO soul_messages (channel_id, direction, content, metadata, status)
+       VALUES (?, 'outbound', ?, ?, ?)`
+    )
+    .run(channel.id, reply, JSON.stringify({ userId }), status);
+
+  await remember({
+    content: `[LINE] User ${userId.substring(0, 8)}...: "${text.substring(0, 80)}" → Soul: "${reply.substring(0, 80)}"`,
+    type: "conversation",
+    tags: ["line", "chat", channel.name],
+    source: "line-webhook",
+  });
 }
 
 // ============================================

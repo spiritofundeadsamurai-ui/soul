@@ -11,6 +11,10 @@ import {
   getTelegramPollingStatus,
   slackAutoSetup,
   discordAutoSetup,
+  whatsappAutoSetup,
+  getWhatsAppStatus,
+  disconnectWhatsApp,
+  lineAutoSetup,
   selfUpdate,
   checkForUpdate,
 } from "../core/channels.js";
@@ -19,11 +23,11 @@ export function registerChannelTools(server: McpServer) {
   // ─── Universal Connect — Soul sets up ANY integration ───
   server.tool(
     "soul_connect",
-    "Connect Soul to ANY service — Telegram, Discord, LLM, webhook, etc. Just give the service name and credentials, Soul handles the rest. Examples: soul_connect('telegram', {botToken:'...'}), soul_connect('discord', {webhookUrl:'...'}), soul_connect('ollama', {host:'...'})",
+    "Connect Soul to ANY service — Telegram, Discord, WhatsApp, LINE, LLM, webhook, etc. Just give the service name and credentials, Soul handles the rest. Examples: soul_connect('telegram', {botToken:'...'}), soul_connect('whatsapp', {}), soul_connect('line', {channelAccessToken:'...'})",
     {
       service: z
         .string()
-        .describe("Service to connect: telegram, discord, webhook, ollama, openai, groq, deepseek, gemini, together, custom"),
+        .describe("Service to connect: telegram, discord, whatsapp, line, webhook, ollama, openai, groq, deepseek, gemini, together, custom"),
       credentials: z
         .string()
         .describe("JSON with credentials — e.g. {\"botToken\":\"123\"} for Telegram, {\"webhookUrl\":\"...\"} for Discord, {\"apiKey\":\"...\"} for LLMs"),
@@ -134,6 +138,40 @@ export function registerChannelTools(server: McpServer) {
             }
           }
           return text("Discord needs a channelId with the botToken.\nUsage: {\"botToken\": \"...\", \"channelId\": \"...\"}");
+        }
+
+        // ─── WhatsApp ───
+        if (svc === "whatsapp" || svc === "wa") {
+          const result = await whatsappAutoSetup(name);
+          if (!result.success) {
+            return text(`WhatsApp setup failed: ${result.message}`);
+          }
+          return text(
+            `✅ WhatsApp initializing!\n\n` +
+            `Channel: "${result.channelName}"\n\n` +
+            (result.qrCode
+              ? `QR Code generated — scan it with your phone:\nWhatsApp → Settings → Linked Devices → Link a Device\n\nThe QR code is printed in the Soul terminal.`
+              : result.message)
+          );
+        }
+
+        // ─── LINE ───
+        if (svc === "line") {
+          const token = creds.channelAccessToken || creds.access_token || creds.token;
+          if (!token) {
+            return text("LINE needs a Channel Access Token.\nGet one: LINE Developers Console → Messaging API → Channel access token\nUsage: {\"channelAccessToken\": \"...\"}");
+          }
+          const result = await lineAutoSetup(token, name);
+          if (!result.success) {
+            return text(`LINE setup failed: ${result.message}`);
+          }
+          return text(
+            `✅ LINE connected!\n\n` +
+            `Bot: ${result.botName}\n` +
+            `Channel: "${result.channelName}"\n\n` +
+            `Set this webhook URL in LINE Developers Console:\n  ${result.webhookUrl}\n\n` +
+            `Enable "Use webhook" in the Messaging API settings.`
+          );
         }
 
         // ─── Webhook (generic) ───
@@ -255,6 +293,67 @@ export function registerChannelTools(server: McpServer) {
         status.active
           ? `Telegram polling is ACTIVE (offset: ${status.offset})`
           : "Telegram polling is NOT running. Use soul_telegram_listen to start."
+      );
+    }
+  );
+
+  // ─── WhatsApp Connect ───
+  server.tool(
+    "soul_whatsapp_connect",
+    "Connect to WhatsApp via QR code scan. Soul generates a QR code — scan it with your phone to link. After linking, Soul auto-replies to all WhatsApp messages.",
+    {
+      channel: z.string().optional().describe("Channel name (default: whatsapp-main)"),
+    },
+    async ({ channel }) => {
+      const result = await whatsappAutoSetup(channel);
+      return text(result.message);
+    }
+  );
+
+  // ─── WhatsApp Status ───
+  server.tool(
+    "soul_whatsapp_status",
+    "Check WhatsApp connection status — connected, QR pending, or disconnected.",
+    {},
+    async () => {
+      const status = getWhatsAppStatus();
+      if (status.connected) {
+        return text(`WhatsApp: CONNECTED (channel: ${status.channelName})`);
+      } else if (status.qrCode) {
+        return text("WhatsApp: QR code waiting — scan it in the Soul terminal.");
+      }
+      return text("WhatsApp: NOT CONNECTED. Use soul_whatsapp_connect to start.");
+    }
+  );
+
+  // ─── WhatsApp Disconnect ───
+  server.tool(
+    "soul_whatsapp_disconnect",
+    "Disconnect from WhatsApp.",
+    {},
+    async () => {
+      const result = disconnectWhatsApp();
+      return text(result.message);
+    }
+  );
+
+  // ─── LINE Connect ───
+  server.tool(
+    "soul_line_connect",
+    "Connect to LINE Messaging API. Give a Channel Access Token from LINE Developers Console. Soul handles the rest.",
+    {
+      channelAccessToken: z.string().describe("LINE Channel Access Token (from LINE Developers Console → Messaging API)"),
+      channel: z.string().optional().describe("Channel name (auto-generated if omitted)"),
+    },
+    async ({ channelAccessToken, channel }) => {
+      const result = await lineAutoSetup(channelAccessToken, channel);
+      if (!result.success) return text(`LINE setup failed: ${result.message}`);
+      return text(
+        `✅ LINE Bot "${result.botName}" connected!\n\n` +
+        `Channel: "${result.channelName}"\n` +
+        `Webhook URL: ${result.webhookUrl}\n\n` +
+        `Set this URL in LINE Developers Console → Messaging API → Webhook URL\n` +
+        `Enable "Use webhook" toggle.`
       );
     }
   );

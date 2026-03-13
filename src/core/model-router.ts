@@ -141,18 +141,19 @@ export function buildCascade(): { simple: CascadeTier; medium: CascadeTier; comp
   };
 
   // Quality ranking (best first) for complex tasks
+  // Updated based on real tool-calling benchmarks (2026-03-13)
   const qualityRank: Record<string, number> = {
     "anthropic:claude-sonnet-4-6": 95,
     "openai:gpt-5": 93,
     "gemini:gemini-2.5-pro": 92,
     "openai:gpt-4o": 88,
     "deepseek:deepseek-reasoner": 87,
+    "groq:moonshotai/kimi-k2-instruct": 85, // 4/4 tool calling, best free model
     "deepseek:deepseek-chat": 82,
-    "groq:qwen/qwen3-32b": 80,
-    "groq:llama-3.3-70b-versatile": 80,
-    "groq:moonshotai/kimi-k2-instruct": 78,
+    "openai:gpt-4o-mini": 80,               // 4/4 tool calling, reliable paid
     "gemini:gemini-2.5-flash": 78,
-    "openai:gpt-4o-mini": 75,
+    "groq:qwen/qwen3-32b": 76,              // 3/4 tool calling, has errors
+    "groq:llama-3.3-70b-versatile": 74,     // 2/4 tool calling, format bugs
   };
 
   // Find cheapest configured provider for simple tasks
@@ -188,6 +189,7 @@ export function buildCascade(): { simple: CascadeTier; medium: CascadeTier; comp
 export function routeToModel(
   message: string,
   taskType?: string,
+  options?: { isAction?: boolean },
 ): ModelRoute | null {
   const defaultConfig = getDefaultConfig();
   if (!defaultConfig) return null;
@@ -232,9 +234,11 @@ export function routeToModel(
   // Build cascade from configured providers
   const cascade = buildCascade();
   if (cascade) {
-    // Map task type to cascade tier
-    const isComplex = ["analytical", "complex", "coding"].includes(detectedTaskType);
-    const isSimple = detectedTaskType === "simple";
+    // CRITICAL: Action messages (commands that need tool calling) ALWAYS use the best model
+    // Small/cheap models often can't do tool calling properly → Soul "talks instead of doing"
+    const isAction = options?.isAction ?? false;
+    const isComplex = isAction || ["analytical", "complex", "coding"].includes(detectedTaskType);
+    const isSimple = !isAction && detectedTaskType === "simple";
 
     const tier = isComplex ? cascade.complex : isSimple ? cascade.simple : cascade.medium;
 

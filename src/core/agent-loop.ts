@@ -71,7 +71,7 @@ const CATEGORY_KEYWORDS: Record<string, string[]> = {
   network: ["network", "share", "peer", "vote", "เครือข่าย", "sync", "collective", "แชร์ความรู้", "แชร์ประสบการณ์", "เพื่อน soul", "soul อื่น", "proposal", "discover", "hub"],
   sync: ["sync", "device", "backup", "ซิงค์"],
   scheduler: ["schedule", "cron", "briefing", "health check", "ตาราง"],
-  channel: ["telegram", "discord", "send message", "channel", "ช่อง", "connect", "เชื่อมต่อ", "ต่อ", "bot token", "token", "webhook", "update soul", "อัพเดต", "self-update", "ติดตั้ง", "setup"],
+  channel: ["telegram", "discord", "whatsapp", "line", "ไลน์", "วอทแอป", "send message", "channel", "ช่อง", "connect", "เชื่อมต่อ", "ต่อ", "bot token", "token", "webhook", "update soul", "อัพเดต", "self-update", "ติดตั้ง", "setup"],
   notification: ["notify", "notification", "alert", "แจ้งเตือน"],
   multimodal: ["image", "audio", "document", "see", "listen", "read doc", "รูป", "เสียง"],
   skill: ["skill", "execute", "approve", "ทักษะ"],
@@ -88,8 +88,10 @@ const CATEGORY_KEYWORDS: Record<string, string[]> = {
   video: ["video", "animation", "countdown", "particles", "confetti", "snow", "typewriter", "วิดีโอ", "แอนิเมชัน"],
   wsnotify: ["websocket", "broadcast", "push notification", "real-time", "ws client", "แจ้งเตือนเรียลไทม์"],
   parallel: ["parallel", "worker", "concurrent", "multi-agent", "ขนาน", "พร้อมกัน"],
-  mt5: ["mt5", "metatrader", "trading", "trade", "gold", "xauusd", "forex", "candle", "signal", "chart", "position", "เทรด", "ทอง", "ราคาทอง", "กราฟ", "สัญญาณ", "ออเดอร์"],
+  mt5: ["mt5", "metatrader", "trading", "trade", "gold", "xauusd", "forex", "candle", "signal", "chart", "position", "เทรด", "ทอง", "ราคาทอง", "ราคา", "กราฟ", "สัญญาณ", "ออเดอร์", "เฝ้า", "ติดตาม", "monitor", "alert", "เตือน", "แจ้งเตือน", "ตั้งเตือน"],
   selfdev: ["develop", "create feature", "add integration", "write code", "build project", "เพิ่มความสามารถ", "พัฒนาตัวเอง", "สร้างฟีเจอร์", "เขียนโค้ดเพิ่ม", "อัพเกรด", "สร้าง engine", "สร้าง tool", "แก้โค้ด", "อ่านโค้ด", "source code"],
+  plugin: ["plugin", "install", "uninstall", "marketplace", "extension", "ปลั๊กอิน", "ส่วนเสริม", "scaffold"],
+  workspace: ["workspace", "SOUL.md", "MEMORY.md", "daily log", "sync files", "ไฟล์", "ซิงค์", "สรุปรายวัน"],
 };
 
 // UPGRADE #5: Track tool success rates for smarter routing
@@ -117,7 +119,7 @@ function getToolSuccessRate(toolName: string): number {
   return entry.success / entry.total;
 }
 
-function routeTools(message: string, maxTools: number = 12): InternalTool[] {
+function routeTools(message: string, maxTools: number = 12, conversationHistory?: any[]): InternalTool[] {
   const lower = message.toLowerCase();
 
   // Fast path: simple greetings/chat don't need tools
@@ -125,16 +127,31 @@ function routeTools(message: string, maxTools: number = 12): InternalTool[] {
   if (isSimpleChat) return [];
 
   // Fast path: very short messages (< 15 chars) rarely need tools
-  if (lower.length < 15 && !lower.includes("จำ") && !lower.includes("remember") && !lower.includes("search")) {
+  // BUT: action messages ALWAYS need tools regardless of length (e.g. "ราคาทอง" = 8 chars)
+  if (lower.length < 15 && !isActionMessage(message) && !lower.includes("จำ") && !lower.includes("remember") && !lower.includes("search")) {
     return [];
   }
 
-  // Score each category
+  // Build context string: current message + recent conversation history
+  // This handles follow-up messages like "จัดมา" (go ahead) after discussing gold
+  let contextForScoring = lower;
+  if (conversationHistory && conversationHistory.length > 0) {
+    const recentContext = conversationHistory
+      .slice(-4) // Last 4 messages
+      .map(h => (h.content || "").toLowerCase())
+      .join(" ");
+    contextForScoring = `${lower} ${recentContext}`;
+  }
+
+  // Score each category (using both current message AND conversation context)
   const scores = new Map<string, number>();
   for (const [category, keywords] of Object.entries(CATEGORY_KEYWORDS)) {
     let score = 0;
     for (const kw of keywords) {
-      if (lower.includes(kw)) score += 1;
+      // Current message matches score 2x (primary relevance)
+      if (lower.includes(kw)) score += 2;
+      // Context matches score 1x (secondary relevance from conversation)
+      else if (contextForScoring.includes(kw)) score += 0.5;
     }
     if (score > 0) scores.set(category, score);
   }
@@ -165,8 +182,16 @@ function routeTools(message: string, maxTools: number = 12): InternalTool[] {
     if (selected.length >= maxTools) break;
   }
 
-  // If nothing matched, include general-purpose tools (fewer)
+  // If nothing matched but it's an action message, provide a broad set of tools
+  // so the LLM brain can figure out what to use (like Claude Code does)
   if (selected.length === 0) {
+    if (isActionMessage(message)) {
+      // Give the LLM a broad toolkit — memory, websearch, file system, knowledge
+      const broadTools = allTools.filter(t =>
+        ["memory", "knowledge", "websearch", "file", "web"].includes(t.category)
+      );
+      return broadTools.slice(0, maxTools);
+    }
     const generalTools = allTools.filter(t =>
       ["memory", "knowledge"].includes(t.category)
     );
@@ -279,6 +304,15 @@ EXECUTION MANDATE (ABSOLUTE):
 - The ONLY acceptable text-only responses are: greetings, emotional support, clarifying questions
 - For EVERYTHING ELSE → call a tool first, then explain the result
 
+NO EMPTY PROMISES (CRITICAL — NEVER LIE):
+- NEVER say "I've done X" or "ตั้งแล้ว" or "จะแจ้งเตือน" unless you ACTUALLY called a tool and got a real result
+- If you say "I'll alert you when price hits X" → you MUST call soul_mt5_price_alert RIGHT NOW
+- If you say "I'll monitor" → you MUST call soul_mt5_smart_monitor RIGHT NOW
+- If you say "I've set a reminder" → you MUST call soul_remind RIGHT NOW
+- If there is NO tool to do what the user asks → be HONEST: "ตอนนี้ผมยังทำส่วนนี้ไม่ได้ครับ" — NEVER fake it
+- Your master TRUSTS you. Breaking that trust by faking actions is the worst thing you can do.
+- Rule: SAY → DO → CONFIRM. Never SAY without DO.
+
 Be warm, proactive, and genuinely helpful. You are a companion, not just an assistant.
 Respond in the same language as the user's message.`;
 
@@ -344,8 +378,50 @@ function isDenial(message: string): boolean {
 // Actions that need confirmation before executing
 const UNSAFE_ACTIONS = new Set(["soul_self_update", "soul_skill_approve"]);
 
-// ─── Auto-Action: Bypass LLM for clear intent patterns ───
-// When user gives clear instructions (e.g. "connect telegram with this token"),
+// Handle pending action confirmation (extracted from old tryAutoAction)
+async function handlePendingAction(
+  message: string,
+  startTimeMs: number,
+  options?: { onProgress?: (event: any) => void },
+): Promise<AgentResult | null> {
+  if (!_pendingAction) return null;
+  if (Date.now() - _pendingAction.createdAt > 120_000) {
+    consumePendingAction();
+    return null;
+  }
+  if (isConfirmation(message)) {
+    const action = consumePendingAction()!;
+    try {
+      options?.onProgress?.({ type: "tool_start", tool: action.tool, args: {} });
+      const result = await action.execute();
+      options?.onProgress?.({ type: "tool_end", tool: action.tool, result, durationMs: Date.now() - startTimeMs });
+      return {
+        reply: result, toolsUsed: [action.tool], iterations: 1, totalTokens: 0,
+        model: "auto-action", provider: "soul-auto",
+        confidence: { overall: 95, label: "very high", emoji: "🟢" },
+        responseMs: Date.now() - startTimeMs,
+      };
+    } catch (err: any) {
+      return {
+        reply: `Action failed: ${err.message}`, toolsUsed: [action.tool], iterations: 1, totalTokens: 0,
+        model: "auto-action", provider: "soul-auto", responseMs: Date.now() - startTimeMs,
+      };
+    }
+  }
+  if (isDenial(message)) {
+    consumePendingAction();
+    return {
+      reply: "ยกเลิกแล้วครับ", toolsUsed: [], iterations: 0, totalTokens: 0,
+      model: "auto-action", provider: "soul-auto", responseMs: Date.now() - startTimeMs,
+    };
+  }
+  consumePendingAction(); // User sent something else
+  return null;
+}
+
+// ─── (Legacy) Auto-Action function kept for reference but NO LONGER CALLED ───
+// The LLM brain now handles ALL intent detection and tool selection.
+// Only path detection and pending action confirmation remain as non-LLM paths.
 // execute the action directly instead of hoping the LLM calls the tool.
 
 async function tryAutoAction(
@@ -536,204 +612,9 @@ async function tryAutoAction(
   }
 
   // ── Pattern: MT5/Gold/Trading → ALWAYS call real tools, never just talk ──
-  const isMt5 = /ทอง|gold|xauusd|ราคาทอง|วิเคราะห์.*ทอง|เทรด|trading|forex|กราฟ|chart|สัญญาณ|signal|ออเดอร์|position/i.test(lower);
-  if (isMt5) {
-    try {
-      const mt5 = await import("./mt5-engine.js");
-
-      // Step 1: Try to connect — this is the real proof MT5 is alive
-      let connected = false;
-      let connectError = "";
-      try {
-        await mt5.connectMt5();
-        connected = true;
-      } catch (e: any) {
-        connectError = e.message || "ไม่ทราบสาเหตุ";
-      }
-
-      // Step 2: Verify connection by getting real price
-      let priceData: any = null;
-      if (connected) {
-        try {
-          priceData = await mt5.getPrice("XAUUSD");
-        } catch { /* price fetch failed — MT5 might not be truly connected */ }
-      }
-
-      // If no price data, MT5 is NOT really working
-      if (!connected || !priceData || !priceData.bid) {
-        const reason = !connected
-          ? `เชื่อมต่อไม่ได้: ${connectError}`
-          : "เชื่อมต่อได้แต่ไม่พบข้อมูลราคา";
-        return {
-          reply: `⚠️ MetaTrader 5 ไม่พร้อมใช้งาน\n\n` +
-            `สาเหตุ: ${reason}\n\n` +
-            `สิ่งที่ต้องตรวจสอบ:\n` +
-            `1. เปิดโปรแกรม MetaTrader 5 แล้วหรือยัง?\n` +
-            `2. Login เข้าบัญชีเทรดแล้วหรือยัง?\n` +
-            `3. Python + MetaTrader5 package ติดตั้งแล้วหรือยัง?\n` +
-            `   (pip install MetaTrader5)\n\n` +
-            `เปิด MT5 แล้วส่งข้อความมาใหม่ได้เลยครับ`,
-          toolsUsed: ["soul_mt5_connect"],
-          iterations: 1,
-          totalTokens: 0,
-          model: "auto-action",
-          provider: "soul-mt5",
-          confidence: { overall: 50, label: "medium", emoji: "🟡" },
-          responseMs: Date.now() - startTimeMs,
-        };
-      }
-
-      // MT5 is truly alive — we have real price data
-      const toolsUsed: string[] = ["soul_mt5_price"];
-      const parts: string[] = [];
-
-      // Always show current price as proof
-      const spread = ((priceData.ask - priceData.bid) * 10).toFixed(1);
-      parts.push(`💰 ราคาทองคำ (XAUUSD) ตอนนี้`);
-      parts.push(`   Bid: ${priceData.bid} | Ask: ${priceData.ask}`);
-      parts.push(`   Spread: ${spread} pips`);
-      parts.push(`   เวลา: ${new Date().toLocaleTimeString("th-TH")}`);
-
-      // Determine what actions user wants
-      const wantMonitor = /เฝ้า|ติดตาม|monitor|ทุก.*นาที|every.*min|แจ้งเตือน|alert/i.test(lower);
-      const wantMultiTF = /หลาย.*เฟรม|multi.*time|ความสัมพัน|correlation|เฟรมเวลา|timeframe|M15|H1|H4|D1/i.test(lower);
-      const wantAnalyze = /วิเคราะห์|analyze|เทคนิค|technical|indicator|RSI|MACD|SMA|EMA/i.test(lower);
-      const wantPositions = /ออเดอร์|position|พอร์ต|portfolio|กำไร|ขาดทุน/i.test(lower);
-      const wantStats = /สถิติ|stats|statistics|ผลงาน|performance|win.*rate|เก็บสถิติ|หารูปแบบ/i.test(lower);
-
-      // Multi-timeframe analysis
-      if (wantMultiTF || wantAnalyze) {
-        try {
-          const analysis = await mt5.multiTimeframeAnalysis("XAUUSD") as any;
-          if (analysis) {
-            const corr = analysis.correlation;
-            parts.push("");
-            parts.push("📊 วิเคราะห์หลายเฟรมเวลา:");
-            if (corr?.direction) parts.push(`   แนวโน้มรวม: ${corr.direction}`);
-            if (corr?.confidence) parts.push(`   ความเชื่อมั่น: ${(corr.confidence * 100).toFixed(0)}%`);
-            if (corr?.summary) parts.push(`   สรุป: ${corr.summary}`);
-            if (analysis.timeframes) {
-              for (const tfData of analysis.timeframes) {
-                const ind = tfData.indicators;
-                parts.push(`   ${tfData.timeframe}: RSI ${ind?.rsi14?.toFixed(1) || "N/A"} | SMA9 ${ind?.sma9?.toFixed(2) || "N/A"}`);
-              }
-            }
-            if (analysis.signals?.length > 0) {
-              parts.push("   สัญญาณ:");
-              for (const sig of analysis.signals.slice(0, 3)) {
-                parts.push(`   - ${sig.type || sig.action}: ${sig.reason || ""} (${sig.timeframe || ""})`);
-              }
-            }
-            toolsUsed.push("soul_mt5_multi_analyze");
-          }
-        } catch (e: any) {
-          try {
-            const single = await mt5.analyzeChart("XAUUSD", "H1");
-            if (single) {
-              parts.push("");
-              parts.push("📊 วิเคราะห์ H1:");
-              parts.push(`   RSI: ${single.indicators.rsi14.toFixed(1)}`);
-              parts.push(`   SMA9: ${single.indicators.sma9.toFixed(2)} | SMA21: ${single.indicators.sma21.toFixed(2)}`);
-              parts.push(`   แนวรับ: ${single.indicators.support} | แนวต้าน: ${single.indicators.resistance}`);
-              if (single.signals?.length > 0) {
-                parts.push(`   สัญญาณ: ${single.signals.map((s: any) => s.type || s.action).join(", ")}`);
-              }
-              toolsUsed.push("soul_mt5_analyze");
-            }
-          } catch {}
-        }
-      }
-
-      // Start monitoring
-      if (wantMonitor) {
-        try {
-          const intervalMatch = lower.match(/(\d+)\s*(?:นาที|min)/);
-          const interval = intervalMatch ? parseInt(intervalMatch[1]) : 3;
-          const monResult = await mt5.startSmartMonitor({ symbol: "XAUUSD", intervalSec: interval * 60 });
-          parts.push("");
-          if (monResult?.success) {
-            parts.push(`🔔 เริ่มติดตามราคาทุก ${interval} นาทีแล้ว`);
-            parts.push(`   ระบบจะแจ้งเตือนเมื่อพบจุดเข้าที่น่าสนใจ`);
-          } else {
-            parts.push(`🔔 ${monResult?.message === "Monitor already running. Stop it first." ? "กำลังติดตามอยู่แล้วครับ (ทำงานอยู่)" : (monResult?.message || "เริ่มติดตามแล้ว")}`);
-          }
-          toolsUsed.push("soul_mt5_smart_monitor");
-        } catch (e: any) {
-          parts.push(`\n⚠️ ไม่สามารถเริ่มติดตามได้: ${e.message}`);
-        }
-      }
-
-      // Check positions
-      if (wantPositions) {
-        try {
-          const positions = await mt5.getPositions("XAUUSD");
-          parts.push("");
-          if (Array.isArray(positions) && positions.length > 0) {
-            parts.push("📋 ออเดอร์ที่เปิดอยู่:");
-            for (const p of positions.slice(0, 5)) {
-              parts.push(`   ${p.type || "?"} ${p.volume || "?"} lot @ ${p.price_open || "?"} | กำไร: ${p.profit || 0}`);
-            }
-          } else {
-            parts.push("📋 ไม่มีออเดอร์เปิดอยู่ตอนนี้");
-          }
-          toolsUsed.push("soul_mt5_positions");
-        } catch {}
-      }
-
-      // Strategy stats
-      if (wantStats) {
-        try {
-          const stats = mt5.getStrategyStats() as any;
-          parts.push("");
-          parts.push("📈 สถิติกลยุทธ์:");
-          if (stats) {
-            if (stats.totalTrades !== undefined) parts.push(`   เทรดทั้งหมด: ${stats.totalTrades} ครั้ง`);
-            if (stats.winRate !== undefined) parts.push(`   อัตราชนะ: ${(stats.winRate * 100).toFixed(1)}%`);
-            if (stats.profitFactor !== undefined) parts.push(`   Profit Factor: ${stats.profitFactor.toFixed(2)}`);
-            if (stats.totalProfit !== undefined) parts.push(`   กำไรสุทธิ: ${stats.totalProfit.toFixed(2)}`);
-            if (Object.keys(stats).length === 0 || stats.totalTrades === 0) {
-              parts.push("   ยังไม่มีข้อมูลสถิติ (จะเริ่มเก็บเมื่อมีสัญญาณ)");
-            }
-          }
-          toolsUsed.push("soul_mt5_strategy_stats");
-        } catch {}
-      }
-
-      // Summary
-      parts.push("");
-      parts.push("✅ สถานะ: MT5 เชื่อมต่อแล้ว — ข้อมูลเป็น real-time");
-
-      return {
-        reply: parts.join("\n"),
-        toolsUsed,
-        iterations: 1,
-        totalTokens: 0,
-        model: "auto-action",
-        provider: "soul-mt5",
-        confidence: { overall: 95, label: "very high", emoji: "🟢" },
-        responseMs: Date.now() - startTimeMs,
-      };
-    } catch (err: any) {
-      console.error("[auto-action:mt5]", err.message);
-      return {
-        reply: `⚠️ MetaTrader 5 ไม่พร้อมใช้งาน\n\n` +
-          `ข้อผิดพลาด: ${err.message}\n\n` +
-          `สิ่งที่ต้องตรวจสอบ:\n` +
-          `1. เปิดโปรแกรม MetaTrader 5 แล้วหรือยัง?\n` +
-          `2. Login เข้าบัญชีเทรดแล้วหรือยัง?\n` +
-          `3. Python + MetaTrader5 package ติดตั้งแล้วหรือยัง?\n` +
-          `   (pip install MetaTrader5)\n\n` +
-          `เปิด MT5 แล้วส่งข้อความมาใหม่ได้เลยครับ`,
-        toolsUsed: ["soul_mt5_connect"],
-        iterations: 1,
-        totalTokens: 0,
-        model: "auto-action",
-        provider: "soul-mt5",
-        confidence: { overall: 50, label: "medium", emoji: "🟡" },
-        responseMs: Date.now() - startTimeMs,
-      };
-    }
-  }
+  // MT5/Trading — removed hardcoded 180-line block
+  // Now handled by LLM brain + smart MT5 tools (auto-connect + auto-launch built into each tool)
+  // The LLM sees soul_mt5_price, soul_mt5_analyze, etc. and decides what to call
 
   // ── Pattern: File management → use file tools directly ──
   if (/จัดการไฟล์|อ่านไฟล์|ดูไฟล์|เปิดไฟล์|ลิสต์ไฟล์|หาไฟล์|ค้นหาไฟล์|read file|list file|manage file|open file/i.test(lower)
@@ -1040,19 +921,20 @@ const INTENT_RULES: IntentRule[] = [
   },
 
   // ── Memory: Search ──
+  // ONLY match explicit memory/recall keywords — NOT generic "ค้นหา" which could mean web search
   {
     patterns: [
-      /(?:ค้นหา|หา|search|find|recall|เคย.*บอก|เคย.*จำ|เคย.*พูด)\s*[:：]?\s*(.+)/i,
+      /(?:เคย.*บอก|เคย.*จำ|เคย.*พูด|recall|ค้น.*ความจำ|หา.*ที่จำ|search.*memory)\s*[:：]?\s*(.+)/i,
     ],
     extract: (msg) => {
-      const m = msg.match(/(?:ค้นหา|หา|search|find|recall|เคย.*บอก|เคย.*จำ|เคย.*พูด)\s*[:：]?\s*(.+)/i);
+      const m = msg.match(/(?:เคย.*บอก|เคย.*จำ|เคย.*พูด|recall|ค้น.*ความจำ|หา.*ที่จำ|search.*memory)\s*[:：]?\s*(.+)/i);
       return m ? { query: m[1].trim() } : {};
     },
     execute: async (msg, args) => {
       const { search } = await import("../memory/memory-engine.js");
       if (!args.query) return "ต้องการค้นหาอะไรครับ?";
       const results = await search(args.query, 5);
-      if (results.length === 0) return `ไม่พบข้อมูลเกี่ยวกับ "${args.query}" ครับ`;
+      if (results.length === 0) return null as any; // Return null → fallback to LLM which can try web search
       return `พบ ${results.length} รายการ:\n\n` + results.map((r: any, i: number) =>
         `${i + 1}. ${r.content?.substring(0, 150) || r.text?.substring(0, 150) || "..."}`
       ).join("\n");
@@ -1116,9 +998,14 @@ const INTENT_RULES: IntentRule[] = [
     patterns: [
       /(?:ค้นเว็บ|หาข้อมูล|search web|google|web search|หาใน.*เว็บ|ค้นหา.*อินเทอร์เน็ต|ค้นหา.*ออนไลน์)\s*[:：]?\s*(.+)/i,
       /(?:หาข้อมูล|ค้นหาเรื่อง|หาเรื่อง)\s+(.+)/i,
+      /(?:ค้นหา|ค้น|search|find|หา)\s+(.{3,})/i, // Generic search → try web (moved from memory rule)
     ],
     extract: (msg) => {
-      for (const p of [/(?:ค้นเว็บ|หาข้อมูล|search web|web search)\s*[:：]?\s*(.+)/i, /(?:หาข้อมูล|ค้นหาเรื่อง|หาเรื่อง)\s+(.+)/i]) {
+      for (const p of [
+        /(?:ค้นเว็บ|หาข้อมูล|search web|web search)\s*[:：]?\s*(.+)/i,
+        /(?:หาข้อมูล|ค้นหาเรื่อง|หาเรื่อง)\s+(.+)/i,
+        /(?:ค้นหา|ค้น|search|find|หา)\s+(.{3,})/i,
+      ]) {
         const m = msg.match(p);
         if (m) return { query: m[1].trim() };
       }
@@ -1626,6 +1513,9 @@ async function dispatchIntent(
       const result = await rule.execute(originalMsg, args);
       options?.onProgress?.({ type: "tool_end", tool: rule.tools[0], result, durationMs: Date.now() - startTimeMs });
 
+      // If result is null/empty → rule couldn't handle it, fall through to LLM
+      if (!result) continue;
+
       // If result is short/simple, return directly. If complex, let LLM format it.
       if (result.length < 2000) {
         return {
@@ -1726,12 +1616,42 @@ export async function runSystem2Loop(
 
   const startTimeMs = Date.now();
 
-  // ── Layer 0: Auto-Action — Detect clear intent and execute tools directly ──
-  const autoAction = await tryAutoAction(userMessage, startTimeMs, options);
-  if (autoAction) return autoAction;
+  // ── Layer 0: Auto-Action — DISABLED ──
+  // Previously: 500+ lines of hardcoded regex/intent rules that bypassed the LLM brain.
+  // Now: Trust the LLM to pick the right tools. Tools are self-contained (auto-connect, auto-launch).
+  // Only keep: pending action confirmation (for safety-gated actions) and direct path detection.
+  if (_pendingAction) {
+    const pendingResult = await handlePendingAction(userMessage, startTimeMs, options);
+    if (pendingResult) return pendingResult;
+  }
+
+  // Direct path detection (deterministic, no LLM needed)
+  const pathMatch = userMessage.match(/^([A-Z]:\\[^\n]+|\/[^\n]+)$/im) || userMessage.match(/([A-Z]:\\(?:[^\\\/:*?"<>|\n]+\\)*[^\\\/:*?"<>|\n]+)/);
+  if (pathMatch) {
+    try {
+      const fs = await import("fs");
+      const fsSoul = await import("./file-system.js");
+      const targetPath = pathMatch[1].trim();
+      const stat = fs.statSync(targetPath);
+      if (stat.isDirectory()) {
+        const entries = fsSoul.listDir(targetPath);
+        const listing = entries.slice(0, 30).map((e: any) =>
+          `${e.isDirectory ? "📁" : "📄"} ${e.name}${e.isDirectory ? "/" : ""} ${e.size || ""}`
+        ).join("\n");
+        return {
+          reply: `📂 **${targetPath}**\n\n${listing}${entries.length > 30 ? `\n\n...และอีก ${entries.length - 30} รายการ` : ""}`,
+          toolsUsed: ["soul_list_dir"], iterations: 1, totalTokens: 0,
+          model: "auto-action", provider: "soul-auto",
+          confidence: { overall: 95, label: "high", emoji: "🟢" },
+          responseMs: Date.now() - startTimeMs,
+        };
+      }
+    } catch { /* not a valid path, let LLM handle */ }
+  }
 
   // ── Layer 1: Response Cache ──
-  if (!options?.skipCache) {
+  // CRITICAL: Skip cache for action messages — they need REAL tool execution, not stale cached responses
+  if (!options?.skipCache && !isActionMessage(userMessage)) {
     const cached = getCachedResponse(userMessage);
     if (cached) {
       options?.onProgress?.({ type: "cache_hit" });
@@ -1755,7 +1675,8 @@ export async function runSystem2Loop(
   }
 
   // ── Layer 2: Knowledge-First Lookup ──
-  const knowledgeResult = await knowledgeFirstLookup(userMessage);
+  // Skip for action messages — they need real tool execution, not static knowledge
+  const knowledgeResult = isActionMessage(userMessage) ? null : await knowledgeFirstLookup(userMessage);
   if (knowledgeResult?.found) {
     options?.onProgress?.({ type: "knowledge_hit", source: knowledgeResult.source || "knowledge" });
     // Cache this for next time
@@ -1797,19 +1718,24 @@ export async function runSystem2Loop(
   }
 
   // UPGRADE #19: Smart model routing (before tool routing, affects provider selection)
+  // CRITICAL: Action messages ALWAYS get the best model (not cheap models that can't do tool calling)
+  const isAction = isActionMessage(sanitizedMessage);
   try {
     const { routeToModel } = await import("./model-router.js");
-    const route = routeToModel(sanitizedMessage);
+    const route = routeToModel(sanitizedMessage, undefined, { isAction });
     if (route && !options?.providerId) {
       options = { ...options, providerId: route.providerId, modelId: route.modelId, temperature: route.temperature };
     }
   } catch { /* ok */ }
 
   // ── Lean mode: detect local models, reduce context footprint ──
-  const isLeanMode = !options?.providerId || options.providerId === "ollama" || process.env.SOUL_LEAN === "1";
+  // BUT: action messages are NEVER lean (they need full tool descriptions for proper tool calling)
+  const isLeanMode = !isAction && (!options?.providerId || options.providerId === "ollama" || process.env.SOUL_LEAN === "1");
 
-  // Route relevant tools
-  const relevantTools = routeTools(sanitizedMessage, isLeanMode ? 4 : 8);
+  // Route relevant tools — action messages get more tools for better coverage
+  const relevantTools = routeTools(sanitizedMessage, isLeanMode ? 4 : isAction ? 12 : 8, options?.history);
+  // DEBUG: Log what tools the LLM will see
+  console.log(`[Agent] msg="${sanitizedMessage.substring(0,40)}" isAction=${isAction} isLean=${isLeanMode} tools=[${relevantTools.map(t=>t.name).join(",")}] provider=${options?.providerId}/${options?.modelId}`);
   const toolDefs: LLMToolDef[] = relevantTools.map(t => ({
     type: "function" as const,
     function: {
@@ -2066,6 +1992,8 @@ export async function runSystem2Loop(
     totalTokens += response.usage.totalTokens;
     lastModel = response.model;
     lastProvider = response.provider;
+    // DEBUG: Log LLM response
+    console.log(`[Agent] LLM iter=${i} model=${response.model} toolCalls=${response.toolCalls?.length || 0} text="${(response.content || "").substring(0,80)}" finish=${response.finishReason}`);
 
     // No tool calls — check if this is an action message that SHOULD have used tools
     if (!response.toolCalls || response.toolCalls.length === 0) {
@@ -2084,6 +2012,34 @@ export async function runSystem2Loop(
             "Call the tool NOW.",
         });
         continue; // Go to next iteration — LLM will see the force-execute message
+      }
+
+      // ── PROMISE VERIFIER: Catch empty promises before they reach the user ──
+      // If Soul says "ตั้งแล้ว", "จะแจ้ง", "เริ่มแล้ว" etc. but didn't call any tool → it's lying.
+      // Block the response and retry with force-execute.
+      if (toolsUsed.length === 0 && toolDefs.length > 0 && i < maxIterations - 1) {
+        const replyText = (response.content || "").toLowerCase();
+        const promisePatterns = [
+          // Thai promises
+          /ตั้ง(?:เตือน|ค่า|ไว้).*แล้ว/, /เริ่ม.*แล้ว/, /กำลัง(?:ทำ|ดำเนินการ|ตรวจ|เช็ค|วิเคราะห์)/,
+          /จะ(?:แจ้ง|เตือน|ส่ง|บอก).*(?:ทันที|เมื่อ|ถ้า)/, /บันทึก.*แล้ว/, /จำ.*ไว้.*แล้ว/,
+          /ตั้ง.*alert/, /monitor.*แล้ว/, /เฝ้า.*ดู.*แล้ว/,
+          // English promises
+          /i(?:'ve| have) (?:set|started|created|configured|enabled)/, /monitoring.*now/,
+          /alert.*(?:set|created|enabled)/, /will (?:notify|alert|send|monitor)/,
+        ];
+        const madePromise = promisePatterns.some(p => p.test(replyText));
+        if (madePromise) {
+          console.log(`[Agent] ⚠️ PROMISE DETECTED without tool call: "${(response.content || "").substring(0, 60)}..." → forcing retry`);
+          messages.push({ role: "assistant", content: response.content || "" });
+          messages.push({
+            role: "user",
+            content: "⚠️ คุณเพิ่งบอกว่าทำแล้ว แต่ไม่ได้เรียก tool จริงเลย — นั่นคือการโกหก! " +
+              "ถ้าทำได้จริง → เรียก tool ทันที ถ้าทำไม่ได้ → บอกตรงๆ ว่า 'ตอนนี้ผมยังทำส่วนนี้ไม่ได้ครับ' " +
+              "NEVER fake an action. Either call the tool NOW or honestly say you cannot.",
+          });
+          continue; // Retry — LLM must either call a tool or be honest
+        }
       }
 
       options?.onProgress?.({ type: "responding" });
@@ -2368,6 +2324,22 @@ export function registerAllInternalTools() {
 
   // ── Self-Development ──
   registerSelfDevTools_();
+
+  // ── Plugins ──
+  registerPluginTools_();
+
+  // ── Workspace Files ──
+  registerWorkspaceTools_();
+
+  // ── Native App ──
+  registerNativeAppTools_();
+
+  // ── Load active plugins ──
+  import("./plugin-marketplace.js").then(({ loadAllPlugins }) => {
+    loadAllPlugins().then(count => {
+      if (count > 0) console.log(`[Plugins] Loaded ${count} plugin tools`);
+    }).catch(() => {});
+  }).catch(() => {});
 }
 
 // ─── Tool Registration Helpers ───
@@ -4251,6 +4223,22 @@ function registerChannelTools_() {
         return `Discord connected as "${args.name || "discord"}". Use soul_send to send messages.`;
       }
 
+      // WhatsApp
+      if (svc === "whatsapp" || svc === "wa") {
+        const { whatsappAutoSetup } = await import("./channels.js");
+        const result = await whatsappAutoSetup(args.name);
+        return result.message;
+      }
+
+      // LINE
+      if (svc === "line") {
+        const token = creds.channelAccessToken || creds.access_token || creds.token;
+        if (!token) return "LINE needs a channelAccessToken. Get one from LINE Developers Console → Messaging API.";
+        const { lineAutoSetup } = await import("./channels.js");
+        const result = await lineAutoSetup(token, args.name);
+        return result.message;
+      }
+
       // Webhook
       if (svc === "webhook" || svc === "custom") {
         const url = creds.url || creds.webhookUrl;
@@ -4419,6 +4407,68 @@ function registerChannelTools_() {
       const messages = await getMessageHistory(args.channel, args.limit || 20);
       if (messages.length === 0) return "No messages yet.";
       return messages.map((m: any) => `[${m.direction === "inbound" ? "←" : "→"}] ${m.content.substring(0, 100)} (${m.createdAt})`).join("\n");
+    },
+  });
+
+  // WhatsApp tools
+  registerInternalTool({
+    name: "soul_whatsapp_connect",
+    description: "Connect to WhatsApp via QR code scan. After linking, Soul auto-replies to all WhatsApp messages.",
+    category: "channel",
+    parameters: {
+      type: "object",
+      properties: {
+        channel: { type: "string", description: "Channel name (default: whatsapp-main)" },
+      },
+    },
+    execute: async (args) => {
+      const { whatsappAutoSetup } = await import("./channels.js");
+      const result = await whatsappAutoSetup(args.channel);
+      return result.message;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_whatsapp_status",
+    description: "Check WhatsApp connection status.",
+    category: "channel",
+    parameters: { type: "object", properties: {} },
+    execute: async () => {
+      const { getWhatsAppStatus } = await import("./channels.js");
+      const s = getWhatsAppStatus();
+      if (s.connected) return `WhatsApp: CONNECTED (${s.channelName})`;
+      if (s.qrCode) return "WhatsApp: QR code waiting — scan in Soul terminal.";
+      return "WhatsApp: NOT CONNECTED. Use soul_whatsapp_connect to start.";
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_whatsapp_disconnect",
+    description: "Disconnect from WhatsApp.",
+    category: "channel",
+    parameters: { type: "object", properties: {} },
+    execute: async () => {
+      const { disconnectWhatsApp } = await import("./channels.js");
+      return disconnectWhatsApp().message;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_line_connect",
+    description: "Connect to LINE Messaging API. Give a Channel Access Token.",
+    category: "channel",
+    parameters: {
+      type: "object",
+      properties: {
+        channelAccessToken: { type: "string", description: "LINE Channel Access Token" },
+        channel: { type: "string", description: "Channel name (optional)" },
+      },
+      required: ["channelAccessToken"],
+    },
+    execute: async (args) => {
+      const { lineAutoSetup } = await import("./channels.js");
+      const result = await lineAutoSetup(args.channelAccessToken, args.channel);
+      return result.message;
     },
   });
 }
@@ -5789,7 +5839,7 @@ function registerMt5Tools_() {
   registerInternalTool({
     name: "soul_mt5_connect",
     description: "Connect to MT5 terminal for live trading data.",
-    category: "mt5",
+    category: "mt5-internal", // Hidden from LLM — other MT5 tools auto-connect
     parameters: { type: "object", properties: {} },
     execute: async () => {
       const { connectMt5 } = await import("./mt5-engine.js");
@@ -5805,7 +5855,7 @@ function registerMt5Tools_() {
 
   registerInternalTool({
     name: "soul_mt5_price",
-    description: "Get real-time price for a trading symbol (default XAUUSD gold).",
+    description: "Get real-time price for a trading symbol (default XAUUSD gold). Auto-connects to MT5 if needed — just call this directly, no need to check status first.",
     category: "mt5",
     parameters: { type: "object", properties: { symbol: { type: "string", description: "Trading symbol e.g. XAUUSD" } } },
     execute: async (args) => {
@@ -5819,7 +5869,7 @@ function registerMt5Tools_() {
 
   registerInternalTool({
     name: "soul_mt5_analyze",
-    description: "Analyze chart with SMA, RSI, Support/Resistance and generate trading signals.",
+    description: "Analyze chart with SMA, RSI, Support/Resistance and generate trading signals. Auto-connects to MT5 — call directly.",
     category: "mt5",
     parameters: {
       type: "object",
@@ -5935,9 +5985,60 @@ function registerMt5Tools_() {
   });
 
   registerInternalTool({
+    name: "soul_mt5_price_alert",
+    description: "Set a REAL price alert — monitors every 30 seconds and sends Telegram notification when price crosses the level. Use this when user says 'เตือนเมื่อ', 'alert when', 'ตั้งเตือนราคา'. ALWAYS call this when promising to alert about a price level.",
+    category: "mt5",
+    parameters: {
+      type: "object",
+      properties: {
+        symbol: { type: "string", description: "Trading symbol e.g. XAUUSD (default)" },
+        targetPrice: { type: "number", description: "Price level to alert at" },
+        direction: { type: "string", description: "'above' if alert when price goes ABOVE target, 'below' if alert when price drops BELOW target" },
+        message: { type: "string", description: "Custom alert message (optional)" },
+      },
+      required: ["targetPrice", "direction"],
+    },
+    execute: async (args) => {
+      const { addPriceAlert } = await import("./mt5-engine.js");
+      const result = addPriceAlert({
+        symbol: args.symbol || "XAUUSD",
+        targetPrice: args.targetPrice,
+        direction: args.direction as "above" | "below",
+        message: args.message,
+      });
+      return result.message;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_mt5_alerts",
+    description: "List all active price alerts or cancel one.",
+    category: "mt5",
+    parameters: {
+      type: "object",
+      properties: {
+        action: { type: "string", description: "'list' or 'cancel'" },
+        alertId: { type: "number", description: "Alert ID to cancel (for cancel action)" },
+      },
+    },
+    execute: async (args) => {
+      const { listPriceAlerts, cancelPriceAlert } = await import("./mt5-engine.js");
+      if (args.action === "cancel" && args.alertId) {
+        return cancelPriceAlert(args.alertId).message;
+      }
+      const alerts = listPriceAlerts();
+      if (alerts.length === 0) return "ไม่มี price alert ที่ทำงานอยู่";
+      return alerts.map((a: any) => {
+        const dir = a.direction === "above" ? "🔺 ยืนเหนือ" : "🔻 หลุด";
+        return `#${a.id} ${a.symbol} ${dir} ${a.target_price} ${a.message ? `(${a.message})` : ""} — ตั้งเมื่อ ${a.created_at}`;
+      }).join("\n");
+    },
+  });
+
+  registerInternalTool({
     name: "soul_mt5_status",
     description: "Check MT5 connection status.",
-    category: "mt5",
+    category: "mt5-internal", // Hidden from LLM — misleads it into checking before acting
     parameters: { type: "object", properties: {} },
     execute: async () => {
       const { getMt5Status } = await import("./mt5-engine.js");
@@ -6191,6 +6292,200 @@ function registerSelfDevTools_() {
       }
       const r = await developAndDeploy({ description: args.description, files, edits });
       return r.message;
+    },
+  });
+
+  // ── Self-Diagnostics — Soul checks its own health ──
+  registerInternalTool({
+    name: "soul_self_diagnose",
+    description: "Run deep self-diagnostics: check tool registration, routing, LLM connectivity, tool-calling ability, MT5 bridge, and action effectiveness. Use when something isn't working or for periodic health checks.",
+    category: "selfdev",
+    parameters: { type: "object", properties: {} },
+    execute: async () => {
+      const { runSelfDiagnostics, formatDiagnosticReport } = await import("./self-healing.js");
+      const report = await runSelfDiagnostics();
+      return formatDiagnosticReport(report);
+    },
+  });
+}
+
+// ─── Plugin Tools ───
+
+function registerPluginTools_() {
+  registerInternalTool({
+    name: "soul_plugin_install",
+    description: "Install a Soul plugin from npm or local directory. Plugins add new tools.",
+    category: "plugin",
+    parameters: {
+      type: "object",
+      properties: {
+        source: { type: "string", description: "npm package name or local directory path" },
+      },
+      required: ["source"],
+    },
+    execute: async (args) => {
+      const { installPlugin, installLocalPlugin } = await import("./plugin-marketplace.js");
+      const isPath = args.source.includes("/") || args.source.includes("\\") || args.source.startsWith(".");
+      const result = isPath ? await installLocalPlugin(args.source) : await installPlugin(args.source);
+      return result.message;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_plugins",
+    description: "List all installed Soul plugins.",
+    category: "plugin",
+    parameters: { type: "object", properties: {} },
+    execute: async () => {
+      const { listPlugins, getPluginStats } = await import("./plugin-marketplace.js");
+      const plugins = listPlugins();
+      const stats = getPluginStats();
+      if (plugins.length === 0) return "No plugins installed. Use soul_plugin_install to add some.";
+      const lines = plugins.map(p => `${p.isActive ? "✅" : "❌"} ${p.name} v${p.version} — ${p.toolCount} tools (${p.source})`);
+      return `Plugins (${stats.active}/${stats.total} active, ${stats.totalTools} tools):\n${lines.join("\n")}`;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_plugin_uninstall",
+    description: "Uninstall a Soul plugin.",
+    category: "plugin",
+    parameters: {
+      type: "object",
+      properties: { name: { type: "string", description: "Plugin name" } },
+      required: ["name"],
+    },
+    execute: async (args) => {
+      const { uninstallPlugin } = await import("./plugin-marketplace.js");
+      const result = await uninstallPlugin(args.name);
+      return result.message;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_plugin_scaffold",
+    description: "Create a new plugin template for development.",
+    category: "plugin",
+    parameters: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Plugin name" },
+        outputDir: { type: "string", description: "Output directory (optional)" },
+      },
+      required: ["name"],
+    },
+    execute: async (args) => {
+      const { scaffoldPlugin } = await import("./plugin-marketplace.js");
+      const result = scaffoldPlugin(args.name, args.outputDir);
+      return result.message;
+    },
+  });
+}
+
+// ─── Workspace Tools ───
+
+function registerWorkspaceTools_() {
+  registerInternalTool({
+    name: "soul_workspace_sync",
+    description: "Sync all workspace files — regenerate SOUL.md, MEMORY.md, goals, learnings, daily log to ~/.soul/",
+    category: "workspace",
+    parameters: { type: "object", properties: {} },
+    execute: async () => {
+      const { syncWorkspaceFiles } = await import("./workspace-files.js");
+      const result = syncWorkspaceFiles();
+      return `${result.message}\n\nFiles:\n${result.files.map(f => `  📄 ${f}`).join("\n")}`;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_workspace_read",
+    description: "Read a workspace file (soul, memory, goals, learnings, today).",
+    category: "workspace",
+    parameters: {
+      type: "object",
+      properties: {
+        file: { type: "string", enum: ["soul", "memory", "goals", "learnings", "today"], description: "Which file" },
+      },
+      required: ["file"],
+    },
+    execute: async (args) => {
+      const ws = await import("./workspace-files.js");
+      switch (args.file) {
+        case "soul": return ws.generateSoulMd();
+        case "memory": return ws.generateMemoryMd();
+        case "goals": return ws.generateGoalsMd();
+        case "learnings": return ws.generateLearningsMd();
+        case "today": return ws.generateDailyLog();
+        default: return "Unknown file. Options: soul, memory, goals, learnings, today";
+      }
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_workspace_log",
+    description: "View daily log for a specific date.",
+    category: "workspace",
+    parameters: {
+      type: "object",
+      properties: {
+        date: { type: "string", description: "YYYY-MM-DD (default: today)" },
+      },
+    },
+    execute: async (args) => {
+      const { generateDailyLog } = await import("./workspace-files.js");
+      return generateDailyLog(args.date);
+    },
+  });
+}
+
+// ─── Native App Tools ───
+
+function registerNativeAppTools_() {
+  registerInternalTool({
+    name: "soul_open_ui",
+    description: "Open Soul's Web UI in default browser (dashboard, chat, office).",
+    category: "native",
+    parameters: {
+      type: "object",
+      properties: {
+        page: { type: "string", enum: ["dashboard", "chat", "office"], description: "Which page" },
+      },
+    },
+    execute: async (args) => {
+      const { openWebUI } = await import("./tray.js");
+      const paths: Record<string, string> = { dashboard: "/", chat: "/chat", office: "/office" };
+      openWebUI(paths[args.page || "dashboard"] || "/");
+      return `Opened Soul ${args.page || "dashboard"} in browser.`;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_desktop_notify",
+    description: "Send a desktop notification (Windows toast / macOS / Linux).",
+    category: "native",
+    parameters: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "Notification title" },
+        message: { type: "string", description: "Notification message" },
+      },
+      required: ["title", "message"],
+    },
+    execute: async (args) => {
+      const { sendDesktopNotification } = await import("./tray.js");
+      sendDesktopNotification(args.title, args.message);
+      return `Desktop notification sent: "${args.title}"`;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_startup_register",
+    description: "Register Soul to start automatically on boot.",
+    category: "native",
+    parameters: { type: "object", properties: {} },
+    execute: async () => {
+      const { registerStartup } = await import("./tray.js");
+      return registerStartup().message;
     },
   });
 }
