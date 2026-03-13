@@ -27,6 +27,7 @@
 import { getRawDb } from "../db/index.js";
 import { tryReflex, promoteToReflex, reportReflexMiss, seedDefaultReflexes } from "./reflex-engine.js";
 import type { AgentResult } from "./agent-loop.js";
+import { isActionMessage } from "./agent-loop.js";
 
 // ─── One-time reflex seeding ───
 let _reflexesSeeded = false;
@@ -115,13 +116,19 @@ export async function processDualBrain(
   }
 
   // ── Phase 1: System 1 Attempt (< 100ms) ──
+  // CRITICAL: Skip System 1 pattern matching for ACTION messages
+  // Action messages (commands with verbs like สร้าง, วิเคราะห์, ค้น, etc.)
+  // MUST go to System 2 where tryAutoAction and tools can execute them.
+  // System 1 can only cache TEXT responses, which is wrong for action messages.
+  const isAction = isActionMessage(userMessage);
+
   if (!options?.skipSystem1) {
     const reflexResult = tryReflex(userMessage, {
       hour: new Date().getHours(),
       isLeanMode: options?.isLeanMode,
     });
 
-    // Safety block — immediate return
+    // Safety block — immediate return (always allow safety, even for action messages)
     if (reflexResult.blocked) {
       trackMetrics("system1", userMessage, reflexResult.reflexType, reflexResult.latencyMs, reflexResult.confidence, undefined, false);
       return {
@@ -141,7 +148,8 @@ export async function processDualBrain(
     }
 
     // Pattern/Tool reflex — confident enough to respond
-    if (reflexResult.handled && reflexResult.confidence && reflexResult.confidence >= threshold * 100) {
+    // BUT: NEVER use cached pattern for action messages — they need real tool execution
+    if (!isAction && reflexResult.handled && reflexResult.confidence && reflexResult.confidence >= threshold * 100) {
       trackMetrics("system1", userMessage, reflexResult.reflexType, reflexResult.latencyMs, reflexResult.confidence, undefined, false);
       return {
         reply: reflexResult.response || "",

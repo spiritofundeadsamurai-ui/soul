@@ -627,6 +627,17 @@ async function tryAutoAction(
           responseMs: Date.now() - startTimeMs,
         };
       }
+      // MT5 connected but returned no data — still report it, don't fall through to LLM
+      return {
+        reply: "⚠️ MT5 เชื่อมต่อสำเร็จแต่ไม่พบข้อมูลราคา กรุณาตรวจสอบว่า XAUUSD มีอยู่ในบัญชีเทรดของคุณ",
+        toolsUsed: ["soul_mt5_connect"],
+        iterations: 1,
+        totalTokens: 0,
+        model: "auto-action",
+        provider: "soul-mt5",
+        confidence: { overall: 50, label: "medium", emoji: "🟡" },
+        responseMs: Date.now() - startTimeMs,
+      };
     } catch (err: any) {
       console.error("[auto-action:mt5]", err.message);
       // MT5 failed — tell user clearly instead of falling through to LLM
@@ -886,7 +897,7 @@ async function tryAutoAction(
 // Detects if a message is a command/action request (not just a question or greeting)
 // Used by Force-Execute to retry LLM when it "talks" instead of "doing"
 
-function isActionMessage(message: string): boolean {
+export function isActionMessage(message: string): boolean {
   const lower = message.toLowerCase();
 
   // Skip greetings, questions about Soul, simple chat
