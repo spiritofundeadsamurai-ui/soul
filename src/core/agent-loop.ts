@@ -272,6 +272,13 @@ SELF-DEVELOPMENT RULES:
 - When user asks you to create features/พัฒนาตัวเอง → use soul_dev_* tools
 - You CAN read/write/edit your own source code and build the project
 
+EXECUTION MANDATE (ABSOLUTE):
+- If a message contains an action verb (สร้าง, ทำ, ส่ง, ค้นหา, วิเคราะห์, etc.) → you MUST call at least ONE tool
+- NEVER respond with "I can do this..." or "I will..." without ACTUALLY calling the tool
+- If you're unsure which tool → call the closest matching tool anyway. Action > perfection.
+- The ONLY acceptable text-only responses are: greetings, emotional support, clarifying questions
+- For EVERYTHING ELSE → call a tool first, then explain the result
+
 Be warm, proactive, and genuinely helpful. You are a companion, not just an assistant.
 Respond in the same language as the user's message.`;
 
@@ -875,6 +882,37 @@ async function tryAutoAction(
   return null; // No auto-action matched — proceed normally
 }
 
+// ─── Action Message Detection ───
+// Detects if a message is a command/action request (not just a question or greeting)
+// Used by Force-Execute to retry LLM when it "talks" instead of "doing"
+
+function isActionMessage(message: string): boolean {
+  const lower = message.toLowerCase();
+
+  // Skip greetings, questions about Soul, simple chat
+  if (/^(hi|hello|สวัสดี|หวัดดี|ดีจ้า|hey|yo|ว่าไง|เป็นไง)\s*$/i.test(lower)) return false;
+  if (/^(ขอบคุณ|thanks|thank you|ดีมาก|เยี่ยม|ok|โอเค)\s*$/i.test(lower)) return false;
+  if (/ทำอะไรได้|ทำอะไรเป็น|what can you|who are you|คุณคือ|คุณเป็น/i.test(lower)) return false;
+
+  // Action verbs (Thai)
+  const thaiActionVerbs = /สร้าง|ทำ|ส่ง|เขียน|อ่าน|ดู|เปิด|ปิด|เริ่ม|หยุด|ตั้ง|แก้|ลบ|เพิ่ม|บันทึก|จำ|ค้น|หา|วิเคราะห์|ตรวจ|สรุป|รัน|เชื่อม|ต่อ|ดาวน์โหลด|อัพ|แชร์|ซิงค์|เทรด|ซื้อ|ขาย|เฝ้า|ติดตาม|แจ้ง|จัด|เตรียม|คำนวณ|เปรียบ|แปลง|จับ|โอน|ส่ง|พัฒนา|ออกแบบ|ทดสอบ|อัพเดต|ติดตั้ง|สั่ง|มอบ|กำหนด|ตั้งค่า/;
+  // Action verbs (English)
+  const engActionVerbs = /\b(create|make|send|write|read|open|close|start|stop|set|fix|delete|add|save|remember|search|find|analyze|check|summarize|run|connect|download|upload|share|sync|trade|buy|sell|monitor|track|alert|prepare|calculate|compare|convert|export|import|generate|build|test|update|install|configure|assign|schedule|deploy)\b/i;
+
+  if (thaiActionVerbs.test(lower)) return true;
+  if (engActionVerbs.test(lower)) return true;
+
+  // Imperative tone indicators
+  if (/ให้.*ทำ|ช่วย.*ทำ|ลอง.*ดู|ทำ.*ให้|จัดการ|ดำเนินการ/i.test(lower)) return true;
+  if (/please|could you|can you.*do|I need you to|go ahead/i.test(lower)) return true;
+
+  // Contains specific domain keywords that imply action
+  if (/ทอง|gold|xauusd|เทรด|trading|ราคา/i.test(lower)) return true;
+  if (/telegram|discord|slack|webhook|token/i.test(lower)) return true;
+
+  return false;
+}
+
 // ─── Intent Dispatch Table ───
 // Each entry: regex patterns → tool import + execute
 // This ensures Soul DOES things instead of just talking about them
@@ -1235,6 +1273,248 @@ const INTENT_RULES: IntentRule[] = [
       return `บันทึก feedback แล้วครับ ผมจะนำไปปรับปรุงตัวเอง`;
     },
     tools: ["soul_feedback"],
+  },
+
+  // ── Research/Deep Research ──
+  {
+    patterns: [
+      /(?:วิจัย|research|ศึกษา|study|investigate|สำรวจ)\s*(?:เรื่อง|about|topic)?\s*[:：]?\s*(.+)/i,
+    ],
+    extract: (msg) => {
+      const m = msg.match(/(?:วิจัย|research|ศึกษา|study|investigate|สำรวจ)\s*(?:เรื่อง|about|topic)?\s*[:：]?\s*(.+)/i);
+      return m ? { topic: m[1].trim() } : {};
+    },
+    execute: async (_msg, args) => {
+      if (!args.topic) return "ต้องการวิจัยเรื่องอะไรครับ?";
+      try {
+        const { webSearch } = await import("./web-search.js");
+        const r = await webSearch(args.topic);
+        return `🔍 ผลการวิจัยเรื่อง "${args.topic}":\n\n${typeof r === "string" ? r : JSON.stringify(r).substring(0, 2000)}`;
+      } catch {
+        return `ไม่สามารถค้นหาข้อมูลได้ในขณะนี้`;
+      }
+    },
+    tools: ["soul_research"],
+  },
+
+  // ── Create Report ──
+  {
+    patterns: [
+      /(?:สร้าง.*รายงาน|create.*report|ทำ.*report|เขียน.*รายงาน|generate.*report)\s*[:：]?\s*(.*)/i,
+    ],
+    extract: (msg) => {
+      const m = msg.match(/(?:สร้าง.*รายงาน|create.*report|ทำ.*report|เขียน.*รายงาน)\s*[:：]?\s*(.*)/i);
+      return { topic: m?.[1]?.trim() || "" };
+    },
+    execute: async (_msg, args) => {
+      const { createHtmlReport } = await import("./media-creator.js");
+      const path = await import("path");
+      const outPath = path.join(process.cwd(), `report-${Date.now()}.html`);
+      const r = createHtmlReport(args.topic || "Report", [{ title: "Overview", content: "Auto-generated report" }], outPath);
+      return typeof r === "string" ? r : `รายงานถูกสร้างแล้ว: ${outPath}`;
+    },
+    tools: ["soul_create_report"],
+  },
+
+  // ── Create Presentation ──
+  {
+    patterns: [
+      /(?:สร้าง.*(?:สไลด์|presentation|พรีเซน)|create.*(?:slide|presentation)|ทำ.*สไลด์)\s*[:：]?\s*(.*)/i,
+    ],
+    extract: (msg) => {
+      const m = msg.match(/(?:สร้าง.*(?:สไลด์|presentation|พรีเซน)|create.*(?:slide|presentation))\s*[:：]?\s*(.*)/i);
+      return { topic: m?.[1]?.trim() || "" };
+    },
+    execute: async (_msg, args) => {
+      const { createPresentation } = await import("./media-creator.js");
+      const r = createPresentation([{ title: "Slide 1", content: args.topic || "Presentation" }], { title: args.topic || "Presentation" });
+      return typeof r === "string" ? r : `สไลด์ถูกสร้างแล้ว: ${JSON.stringify(r).substring(0, 500)}`;
+    },
+    tools: ["soul_create_presentation"],
+  },
+
+  // ── Weekly Summary ──
+  {
+    patterns: [
+      /(?:สรุป.*สัปดาห์|สรุปประจำสัปดาห์|weekly.*summary|weekly.*digest|recap.*week|สรุป.*อาทิตย์)/i,
+    ],
+    execute: async () => {
+      const { generateWeeklySummary } = await import("./daily-digest.js");
+      const r = await generateWeeklySummary();
+      return typeof r === "string" ? r : JSON.stringify(r).substring(0, 2000);
+    },
+    tools: ["soul_weekly"],
+  },
+
+  // ── Habit Tracking ──
+  {
+    patterns: [
+      /(?:นิสัย|habit|ติดตาม.*นิสัย|track.*habit|สร้าง.*นิสัย|build.*habit)\s*[:：]?\s*(.*)/i,
+    ],
+    extract: (msg) => {
+      const m = msg.match(/(?:นิสัย|habit)\s*[:：]?\s*(.*)/i);
+      return { name: m?.[1]?.trim() || "" };
+    },
+    execute: async (_msg, args) => {
+      const { createHabit, getHabits } = await import("./life.js");
+      if (args.name) {
+        await createHabit({ name: args.name, category: "personal" });
+        return `เพิ่มนิสัยใหม่: "${args.name}"`;
+      }
+      const habits = await getHabits();
+      return habits.length > 0
+        ? `นิสัยที่ติดตาม:\n${habits.map((h: any, i: number) => `${i + 1}. ${h.name} — streak: ${h.streak || 0} วัน`).join("\n")}`
+        : "ยังไม่มีนิสัยที่ติดตาม บอกชื่อนิสัยที่ต้องการสร้างได้เลยครับ";
+    },
+    tools: ["soul_habit"],
+  },
+
+  // ── Set Reminder ──
+  {
+    patterns: [
+      /(?:เตือน|remind|ตั้งเตือน|set.*reminder|แจ้งเตือน.*เมื่อ|remind.*me)\s*[:：]?\s*(.+)/i,
+    ],
+    extract: (msg) => {
+      const m = msg.match(/(?:เตือน|remind|ตั้งเตือน|set.*reminder)\s*[:：]?\s*(.+)/i);
+      return m ? { text: m[1].trim() } : {};
+    },
+    execute: async (_msg, args) => {
+      const { addReminder } = await import("./autonomy.js");
+      if (!args.text) return "ต้องการให้เตือนเรื่องอะไรครับ?";
+      await addReminder(args.text, "event", "manual");
+      return `ตั้งเตือนแล้ว: "${args.text}"`;
+    },
+    tools: ["soul_remind"],
+  },
+
+  // ── Create Task ──
+  {
+    patterns: [
+      /(?:สร้าง.*งาน|create.*task|เพิ่ม.*งาน|add.*task|todo|ต้องทำ)\s*[:：]?\s*(.+)/i,
+    ],
+    extract: (msg) => {
+      const m = msg.match(/(?:สร้าง.*งาน|create.*task|เพิ่ม.*งาน|add.*task|todo|ต้องทำ)\s*[:：]?\s*(.+)/i);
+      return m ? { title: m[1].trim() } : {};
+    },
+    execute: async (_msg, args) => {
+      const { createTask } = await import("./autonomy.js");
+      if (!args.title) return "ต้องการสร้างงานอะไรครับ?";
+      const r = await createTask({ title: args.title, description: args.title });
+      return `สร้างงานแล้ว: "${args.title}"`;
+    },
+    tools: ["soul_task_create"],
+  },
+
+  // ── Introspect/Self-Reflect ──
+  {
+    patterns: [
+      /(?:ทบทวน.*ตัวเอง|introspect|self.*reflect|ตรวจ.*ตัวเอง|ประเมิน.*ตัว|self.*review)/i,
+    ],
+    execute: async () => {
+      const { introspect } = await import("./awareness.js");
+      const r = await introspect();
+      return typeof r === "string" ? r : JSON.stringify(r).substring(0, 2000);
+    },
+    tools: ["soul_introspect"],
+  },
+
+  // ── Explain/Teach ──
+  {
+    patterns: [
+      /(?:อธิบาย|explain|สอน.*เรื่อง|teach.*about|สอน.*ให้)\s*[:：]?\s*(.+)/i,
+    ],
+    extract: (msg) => {
+      const m = msg.match(/(?:อธิบาย|explain|สอน.*เรื่อง|teach.*about|สอน.*ให้)\s*[:：]?\s*(.+)/i);
+      return m ? { topic: m[1].trim() } : {};
+    },
+    execute: async (_msg, args) => {
+      if (!args.topic) return "ต้องการให้อธิบายเรื่องอะไรครับ?";
+      const { createLesson } = await import("./creative.js");
+      const r = await createLesson(args.topic, "beginner");
+      return typeof r === "string" ? r : JSON.stringify(r).substring(0, 2000);
+    },
+    tools: ["soul_teach_me"],
+  },
+
+  // ── Send Message (Telegram/Discord/Slack) ──
+  {
+    patterns: [
+      /(?:ส่ง.*ข้อความ|send.*message|ส่ง.*ไป.*(?:telegram|discord|slack))\s*[:：]?\s*(.*)/i,
+    ],
+    extract: (msg) => {
+      const m = msg.match(/(?:ส่ง.*ข้อความ|send.*message)\s*[:：]?\s*(.*)/i);
+      let channel = "telegram";
+      if (/discord/i.test(msg)) channel = "discord";
+      if (/slack/i.test(msg)) channel = "slack";
+      return { message: m?.[1]?.trim() || "", channel };
+    },
+    execute: async (_msg, args) => {
+      const { sendMessage } = await import("./channels.js");
+      if (!args.message) return "ต้องการส่งข้อความอะไรครับ?";
+      const r = await sendMessage(args.channel, args.message);
+      return `ส่งข้อความไป ${args.channel} แล้ว: "${args.message}"`;
+    },
+    tools: ["soul_send"],
+  },
+
+  // ── Workflow Run ──
+  {
+    patterns: [
+      /(?:รัน.*workflow|run.*workflow|เริ่ม.*workflow|start.*workflow)\s*[:：]?\s*(.*)/i,
+    ],
+    extract: (msg) => {
+      const m = msg.match(/(?:รัน.*workflow|run.*workflow)\s*[:：]?\s*(.*)/i);
+      return { name: m?.[1]?.trim() || "" };
+    },
+    execute: async (_msg, args) => {
+      const { startWorkflowRun, listWorkflows } = await import("./workflow-engine.js");
+      if (!args.name) {
+        const wfs = listWorkflows();
+        return wfs.length > 0
+          ? `Workflows:\n${wfs.map((w: any, i: number) => `${i + 1}. ${w.name}`).join("\n")}\n\nบอกชื่อ workflow ที่ต้องการรันได้เลย`
+          : "ยังไม่มี workflow บอกได้เลยถ้าต้องการสร้าง";
+      }
+      const r = startWorkflowRun(args.name);
+      return r ? `Workflow "${args.name}" started: ${r.executionPlan}` : `ไม่พบ workflow "${args.name}"`;
+
+    },
+    tools: ["soul_workflow_run"],
+  },
+
+  // ── Snippet Save (Code) ──
+  {
+    patterns: [
+      /(?:เก็บ.*โค้ด|save.*(?:code|snippet)|snippet.*save|จด.*โค้ด)\s*[:：]?\s*(.*)/i,
+    ],
+    extract: (msg) => {
+      const m = msg.match(/(?:เก็บ.*โค้ด|save.*(?:code|snippet))\s*[:：]?\s*(.*)/i);
+      return { code: m?.[1]?.trim() || "" };
+    },
+    execute: async (_msg, args) => {
+      const { saveSnippet } = await import("./code-intelligence.js");
+      if (!args.code) return "ต้องการเก็บโค้ดอะไรครับ?";
+      const r = await saveSnippet({ title: args.code.substring(0, 50), code: args.code, language: "auto" });
+      return `เก็บ snippet แล้ว: "${args.code.substring(0, 80)}"`;
+    },
+    tools: ["soul_snippet_save"],
+  },
+
+  // ── Bookmark ──
+  {
+    patterns: [
+      /(?:bookmark|บุ๊คมาร์ค|เก็บ.*ลิงค์|save.*link|เก็บ.*url)\s*[:：]?\s*(.*)/i,
+    ],
+    extract: (msg) => {
+      const m = msg.match(/(https?:\/\/[^\s]+)/);
+      return { url: m?.[1] || "", title: msg.replace(/(https?:\/\/[^\s]+)/, "").trim() };
+    },
+    execute: async (_msg, args) => {
+      const { quickBookmark } = await import("./quick-capture.js");
+      if (!args.url) return "ต้องการบุ๊คมาร์คลิงค์อะไรครับ?";
+      quickBookmark(args.url, args.title || "Bookmark");
+      return `บันทึก bookmark แล้ว: ${args.url}`;
+    },
+    tools: ["soul_bookmark"],
   },
 ];
 
@@ -1695,8 +1975,25 @@ export async function runSystem2Loop(
     lastModel = response.model;
     lastProvider = response.provider;
 
-    // No tool calls — we have the final answer
+    // No tool calls — check if this is an action message that SHOULD have used tools
     if (!response.toolCalls || response.toolCalls.length === 0) {
+
+      // ── FORCE-EXECUTE: If message requires action but LLM just talked, retry with stronger instructions ──
+      if (i === 0 && toolsUsed.length === 0 && toolDefs.length > 0 && isActionMessage(sanitizedMessage)) {
+        // LLM had tools available but chose to just talk — force retry
+        messages.push({
+          role: "assistant",
+          content: response.content || "",
+        });
+        messages.push({
+          role: "user",
+          content: "⚠️ คุณต้องเรียกใช้ tools เพื่อทำงานจริง อย่าแค่อธิบาย — ให้เรียก tool แล้วทำเลย! " +
+            "You MUST call at least one tool to execute this request. DO NOT just describe what you could do. " +
+            "Call the tool NOW.",
+        });
+        continue; // Go to next iteration — LLM will see the force-execute message
+      }
+
       options?.onProgress?.({ type: "responding" });
       let reply = response.content || "(Soul had nothing to say)";
 
