@@ -30,14 +30,23 @@ export interface InternalTool {
 }
 
 const toolRegistry = new Map<string, InternalTool>();
+const toolsByCategory = new Map<string, InternalTool[]>(); // Pre-indexed by category
 let _toolsRegistered = false;
 
 export function registerInternalTool(tool: InternalTool) {
   toolRegistry.set(tool.name, tool);
+  // Maintain category index for fast routing
+  const catTools = toolsByCategory.get(tool.category) || [];
+  catTools.push(tool);
+  toolsByCategory.set(tool.category, catTools);
 }
 
 export function getRegisteredTools(): InternalTool[] {
   return Array.from(toolRegistry.values());
+}
+
+export function getToolsByCategory(category: string): InternalTool[] {
+  return toolsByCategory.get(category) || [];
 }
 
 // ─── Tool Router — Pick relevant tools per turn ───
@@ -164,13 +173,13 @@ function routeTools(message: string, maxTools: number = 12, conversationHistory?
     .sort((a, b) => b[1] - a[1])
     .map(([cat]) => cat);
 
-  // Collect tools from top categories (limit categories to top 3 for speed)
+  // Collect tools from top categories (expanded to top 5 for better coverage)
+  // Uses pre-indexed toolsByCategory map — O(1) lookup instead of filtering 201 tools
   const selected: InternalTool[] = [];
-  const allTools = getRegisteredTools();
-  const topCategories = sortedCategories.slice(0, 3);
+  const topCategories = sortedCategories.slice(0, 5);
 
   for (const category of topCategories) {
-    const catTools = allTools.filter(t => t.category === category);
+    const catTools = [...getToolsByCategory(category)];
     // UPGRADE #5: Sort by success rate within category
     catTools.sort((a, b) => getToolSuccessRate(b.name) - getToolSuccessRate(a.name));
     for (const tool of catTools) {
@@ -187,14 +196,14 @@ function routeTools(message: string, maxTools: number = 12, conversationHistory?
   if (selected.length === 0) {
     if (isActionMessage(message)) {
       // Give the LLM a broad toolkit — memory, websearch, file system, knowledge
-      const broadTools = allTools.filter(t =>
-        ["memory", "knowledge", "websearch", "file", "web"].includes(t.category)
-      );
+      const broadCategories = ["memory", "knowledge", "websearch", "filesystem", "web"];
+      const broadTools: InternalTool[] = [];
+      for (const cat of broadCategories) {
+        broadTools.push(...getToolsByCategory(cat));
+      }
       return broadTools.slice(0, maxTools);
     }
-    const generalTools = allTools.filter(t =>
-      ["memory", "knowledge"].includes(t.category)
-    );
+    const generalTools = [...getToolsByCategory("memory"), ...getToolsByCategory("knowledge")];
     return generalTools.slice(0, 4);
   }
 
@@ -2001,6 +2010,15 @@ export async function runSystem2Loop(
       // ── FORCE-EXECUTE: If message requires action but LLM just talked, retry with stronger instructions ──
       if (i === 0 && toolsUsed.length === 0 && toolDefs.length > 0 && isActionMessage(sanitizedMessage)) {
         // LLM had tools available but chose to just talk — force retry
+        // UPGRADE: Try switching to a known good tool-calling model on retry
+        try {
+          const { buildCascade } = await import("./model-router.js");
+          const cascade = buildCascade();
+          if (cascade && cascade.complex.providerId !== options?.providerId) {
+            console.log(`[Agent] Tool-calling failed with ${options?.providerId}/${options?.modelId} — switching to ${cascade.complex.label}`);
+            options = { ...options, providerId: cascade.complex.providerId, modelId: cascade.complex.modelId };
+          }
+        } catch { /* ok */ }
         messages.push({
           role: "assistant",
           content: response.content || "",

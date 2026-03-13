@@ -471,25 +471,54 @@ export async function hybridVectorSearch(
 // ─── Background Embedding Builder ───
 
 let _embeddingInterval: ReturnType<typeof setInterval> | null = null;
+let _turboMode = true; // Start in turbo mode, slow down once caught up
 
 /**
  * Start background embedding of unembedded memories
- * Runs every 60 seconds, embeds 10 memories per batch
+ * TURBO MODE: batch 100 every 15s until <95% coverage, then slow to batch 20 every 60s
  */
 export function startEmbeddingBuilder() {
   if (_embeddingInterval || !_activeProvider) return;
 
-  console.log("[Embeddings] Background builder started");
-  _embeddingInterval = setInterval(async () => {
+  console.log("[Embeddings] Background builder started (turbo mode)");
+
+  const runCycle = async () => {
     try {
-      await embedUnembeddedMemories(10);
+      const stats = getEmbeddingStats();
+      const remaining = stats.totalMemories - stats.embeddedMemories;
+
+      if (remaining <= 0) {
+        // Fully caught up — slow interval, small batch for new memories only
+        if (_turboMode) {
+          _turboMode = false;
+          clearInterval(_embeddingInterval!);
+          _embeddingInterval = setInterval(runCycle, 60_000);
+          console.log("[Embeddings] 100% coverage — switched to maintenance mode (60s)");
+        }
+        await embedUnembeddedMemories(10);
+        return;
+      }
+
+      if (_turboMode && stats.coverage >= 95) {
+        // Caught up enough — slow down
+        _turboMode = false;
+        clearInterval(_embeddingInterval!);
+        _embeddingInterval = setInterval(runCycle, 60_000);
+        console.log(`[Embeddings] ${stats.coverage}% coverage — switched to normal mode (60s)`);
+      }
+
+      const batchSize = _turboMode ? 100 : 20;
+      await embedUnembeddedMemories(batchSize);
     } catch (e: any) {
       console.error("[Embeddings] Builder error:", e.message);
     }
-  }, 60_000);
+  };
 
-  // Also run once immediately
-  embedUnembeddedMemories(50).catch(() => {});
+  // Turbo: 15s interval with large batches
+  _embeddingInterval = setInterval(runCycle, 15_000);
+
+  // Run immediately with large batch
+  embedUnembeddedMemories(200).catch(() => {});
 }
 
 /**

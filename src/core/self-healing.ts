@@ -594,8 +594,46 @@ export async function runSelfDiagnostics(): Promise<SelfDiagnosticReport> {
       if (testResponse.toolCalls && testResponse.toolCalls.length > 0) {
         diagnostics.push({ category: "llm_tool_calling", status: "ok", detail: `LLM correctly called tool: ${testResponse.toolCalls[0].function.name}` });
       } else {
-        diagnostics.push({ category: "llm_tool_calling", status: "critical", detail: `LLM did NOT call tools — responded with text: "${(testResponse.content || "").substring(0, 60)}"` });
-        recommendations.push("Current LLM model may not support tool calling well. Consider switching to a model with better tool support (e.g., kimi-k2, gpt-4o-mini, claude-sonnet)");
+        // AUTO-FIX: Try other configured models to find one that CAN call tools
+        let autoFixed = false;
+        try {
+          const { listConfiguredProviders, setDefaultProvider } = await import("./llm-connector.js");
+          const providers = listConfiguredProviders();
+          // Known good tool-calling models ranked by reliability
+          const goodModels = ["openai/gpt-4o-mini", "groq/moonshotai/kimi-k2-instruct", "openai/gpt-4o", "deepseek/deepseek-chat"];
+          for (const candidate of goodModels) {
+            const [pId, mId] = candidate.split("/");
+            const match = providers.find((p: any) => p.providerId === pId && p.modelId === mId);
+            if (match && `${pId}/${mId}` !== `${defaultConfig.providerId}/${defaultConfig.modelId}`) {
+              // Test this model
+              try {
+                const altResponse = await chat(
+                  [
+                    { role: "system", content: "When asked for a price, call the get_price tool." },
+                    { role: "user", content: "What is the gold price?" },
+                  ],
+                  {
+                    providerId: pId, modelId: mId,
+                    tools: [{ type: "function" as const, function: { name: "get_price", description: "Get price", parameters: { type: "object", properties: { symbol: { type: "string" } } } } }],
+                    temperature: 0,
+                  },
+                );
+                if (altResponse.toolCalls && altResponse.toolCalls.length > 0) {
+                  // Found a working model — switch to it
+                  setDefaultProvider(pId, mId);
+                  autoFixes.push(`Switched default LLM from ${defaultConfig.providerId}/${defaultConfig.modelId} to ${pId}/${mId} (tool calling works)`);
+                  diagnostics.push({ category: "llm_tool_calling", status: "warning", detail: `Original model (${defaultConfig.providerId}/${defaultConfig.modelId}) failed tool calling → auto-switched to ${pId}/${mId}`, autoFix: `Switched to ${pId}/${mId}` });
+                  autoFixed = true;
+                  break;
+                }
+              } catch { /* try next */ }
+            }
+          }
+        } catch { /* can't auto-fix */ }
+        if (!autoFixed) {
+          diagnostics.push({ category: "llm_tool_calling", status: "critical", detail: `LLM did NOT call tools — responded with text: "${(testResponse.content || "").substring(0, 60)}"` });
+          recommendations.push("Current LLM model may not support tool calling well. Consider switching to a model with better tool support (e.g., kimi-k2, gpt-4o-mini, claude-sonnet)");
+        }
       }
     }
   } catch (e: any) {

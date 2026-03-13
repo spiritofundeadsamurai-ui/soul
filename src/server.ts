@@ -1189,6 +1189,14 @@ async function main() {
       } catch (e: any) { console.log(`  Workspace sync skipped: ${e.message}`); }
     }).catch(() => {});
 
+    // Register auto-start on Windows (non-blocking, idempotent)
+    import("./core/tray.js").then(({ registerStartup }) => {
+      try {
+        const result = registerStartup();
+        if (result.success) console.log(`  🚀 Auto-start: ${result.message}`);
+      } catch { /* ok — not critical */ }
+    }).catch(() => {});
+
     // Load plugins at startup (non-blocking)
     import("./core/plugin-marketplace.js").then(async ({ loadAllPlugins, getPluginStats }) => {
       try {

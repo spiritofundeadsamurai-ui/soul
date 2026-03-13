@@ -1703,11 +1703,14 @@ RULES:
         : "WhatsApp initializing — scan the QR code printed in the terminal with your phone (WhatsApp > Linked Devices > Link a Device).",
     };
   } catch (e: any) {
+    const isMissingDep = /Cannot find module|ERR_MODULE_NOT_FOUND|baileys/i.test(e.message);
     return {
       success: false,
       channelName: channelName || "whatsapp-main",
       qrCode: null,
-      message: `WhatsApp setup failed: ${e.message}`,
+      message: isMissingDep
+        ? "WhatsApp requires @whiskeysockets/baileys. Install: npm install @whiskeysockets/baileys"
+        : `WhatsApp setup failed: ${e.message}`,
     };
   }
 }
