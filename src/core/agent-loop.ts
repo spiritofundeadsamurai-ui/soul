@@ -2495,6 +2495,55 @@ export function registerAllInternalTools() {
   // ── Native App ──
   registerNativeAppTools_();
 
+  // ── Trading Signal ──
+  registerInternalTool({
+    name: "soul_trading_signal",
+    description: "Detect trading signals for gold/forex — combines price action + news + multi-timeframe analysis. Validates before alerting.",
+    category: "mt5",
+    parameters: {
+      type: "object",
+      properties: { symbol: { type: "string", description: "Trading symbol (default: XAUUSD)" } },
+    },
+    execute: async (args) => {
+      const { autoSignalAlert } = await import("./trading-signal.js");
+      return autoSignalAlert(args.symbol || "XAUUSD");
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_trading_journal",
+    description: "View trading signal journal — history of all signals with outcomes (WIN/LOSS).",
+    category: "mt5",
+    parameters: { type: "object", properties: {} },
+    execute: async () => {
+      const { getJournal, getTradingStats } = await import("./trading-signal.js");
+      const stats = getTradingStats();
+      const journal = getJournal(10);
+      let reply = `📊 Trading Stats: ${stats.totalSignals} signals, ${(stats.winRate * 100).toFixed(0)}% win rate, avg ${stats.avgPips.toFixed(1)} pips\n${stats.recentPerformance}\n\n`;
+      if (journal.length === 0) reply += "ยังไม่มี signal ในบันทึก";
+      else reply += journal.map(j => `#${j.id} ${j.direction} ${j.symbol} $${j.entryPrice.toFixed(2)} conf:${j.confidence}% → ${j.outcome || "pending"} ${j.outcomePips ? (j.outcomePips > 0 ? "+" : "") + j.outcomePips.toFixed(1) + " pips" : ""}`).join("\n");
+      return reply;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_signal_outcome",
+    description: "Record the outcome of a past trading signal — did it WIN or LOSE?",
+    category: "mt5",
+    parameters: {
+      type: "object",
+      properties: {
+        signalId: { type: "number", description: "Signal ID from journal" },
+        currentPrice: { type: "number", description: "Current price to calculate P/L" },
+      },
+      required: ["signalId", "currentPrice"],
+    },
+    execute: async (args) => {
+      const { updateSignalOutcome } = await import("./trading-signal.js");
+      return updateSignalOutcome(args.signalId, args.currentPrice);
+    },
+  });
+
   // ── Video Learner ──
   registerInternalTool({
     name: "soul_learn_video",
