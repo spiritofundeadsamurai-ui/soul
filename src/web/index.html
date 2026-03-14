@@ -131,6 +131,7 @@
     <div class="status">
       <div class="status-dot"></div>
       <span id="statusText" style="font-size:13px;color:var(--text2)">Loading...</span>
+      <span onclick="toggleTheme()" style="cursor:pointer;font-size:18px;margin-left:8px" title="Toggle theme">&#127763;</span>
     </div>
   </div>
 
@@ -222,6 +223,30 @@
       const loaders = { brain: initBrain, memories: loadMemories, knowledge: loadKnowledge, people: loadPeople, learning: loadLearning, notes: loadNotes, philosophy: loadPhilosophy };
       if (loaders[name]) loaders[name]();
     }
+
+    // ─── Theme Toggle ───
+    function toggleTheme() {
+      const root = document.documentElement;
+      const isDark = getComputedStyle(root).getPropertyValue('--bg').trim() === '#0a0a0f';
+      if (isDark) {
+        root.style.setProperty('--bg', '#f5f5f5');
+        root.style.setProperty('--bg2', '#ffffff');
+        root.style.setProperty('--bg3', '#e8e8ee');
+        root.style.setProperty('--text', '#1a1a2e');
+        root.style.setProperty('--text2', '#666688');
+        root.style.setProperty('--border', '#d0d0e0');
+        localStorage.setItem('soul_theme', 'light');
+      } else {
+        root.style.setProperty('--bg', '#0a0a0f');
+        root.style.setProperty('--bg2', '#12121a');
+        root.style.setProperty('--bg3', '#1a1a2e');
+        root.style.setProperty('--text', '#e0e0e8');
+        root.style.setProperty('--text2', '#8888aa');
+        root.style.setProperty('--border', '#2a2a3e');
+        localStorage.setItem('soul_theme', 'dark');
+      }
+    }
+    if (localStorage.getItem('soul_theme') === 'light') toggleTheme();
 
     // ─── Auth token management ───
     let authToken = sessionStorage.getItem('soul_token') || '';

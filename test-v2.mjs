@@ -135,7 +135,73 @@ try {
   }
 } catch (e) { fail++; console.log(`  ✗ Backup error: ${e.message}`); }
 
-console.log("\n9. Self-Healing Diagnostics");
+// ─── 9. Memory Consolidation ───
+console.log("\n9. Memory Consolidation");
+try {
+  const mc = await import("./dist/core/memory-consolidation.js");
+  ok("Module loads", typeof mc.consolidateMemories === "function");
+  ok("deduplicateMemories exported", typeof mc.deduplicateMemories === "function");
+  ok("getConsolidationStats exported", typeof mc.getConsolidationStats === "function");
+  const stats = mc.getConsolidationStats();
+  ok("Stats works", stats.totalMemories >= 0);
+} catch (e) { fail++; console.log(`  ✗ Consolidation error: ${e.message}`); }
+
+// ─── 10. Audit Log ───
+console.log("\n10. Audit Log");
+try {
+  const al = await import("./dist/core/audit-log.js");
+  ok("Module loads", typeof al.logAudit === "function");
+  al.logAudit({ action: "test", category: "test", detail: "integration test" });
+  const log = al.getAuditLog({ limit: 5 });
+  ok("Audit entry created", log.length > 0 && log[0].action === "test");
+  ok("getAuditStats works", typeof al.getAuditStats === "function");
+} catch (e) { fail++; console.log(`  ✗ Audit error: ${e.message}`); }
+
+// ─── 11. Webhook Outbound ───
+console.log("\n11. Webhook Outbound");
+try {
+  const wh = await import("./dist/core/webhook-outbound.js");
+  ok("Module loads", typeof wh.addWebhook === "function");
+  ok("listWebhooks exported", typeof wh.listWebhooks === "function");
+  ok("fireWebhook exported", typeof wh.fireWebhook === "function");
+  ok("removeWebhook exported", typeof wh.removeWebhook === "function");
+} catch (e) { fail++; console.log(`  ✗ Webhook error: ${e.message}`); }
+
+// ─── 12. Data Export/Import ───
+console.log("\n12. Data Export/Import");
+try {
+  const de = await import("./dist/core/data-export.js");
+  ok("Module loads", typeof de.exportData === "function");
+  ok("importData exported", typeof de.importData === "function");
+  ok("listExports exported", typeof de.listExports === "function");
+  const result = de.exportData({ sections: ["memories"] });
+  ok("Export works", result.success, result.message);
+} catch (e) { fail++; console.log(`  ✗ Export error: ${e.message}`); }
+
+// ─── 13. Plugin Registry ───
+console.log("\n13. Plugin Registry");
+try {
+  const pm = await import("./dist/core/plugin-marketplace.js");
+  ok("getPluginRegistry exported", typeof pm.getPluginRegistry === "function");
+  const registry = pm.getPluginRegistry();
+  ok("Registry has plugins", registry.length > 0);
+  ok("Registry has weather", registry.some(p => p.name === "Weather"));
+} catch (e) { fail++; console.log(`  ✗ Plugin registry error: ${e.message}`); }
+
+// ─── 14. Agent Tools Count ───
+console.log("\n14. Agent Tools");
+try {
+  const al = await import("./dist/core/agent-loop.js");
+  al.registerAllInternalTools();
+  const tools = al.getRegisteredTools();
+  const newTools = ["soul_export", "soul_import", "soul_consolidate", "soul_audit", "soul_webhook_add", "soul_webhooks", "soul_backup"];
+  for (const t of newTools) {
+    ok(`Tool: ${t}`, tools.some(tool => tool.name === t));
+  }
+  ok(`Total tools >= 208`, tools.length >= 208, `Only ${tools.length}`);
+} catch (e) { fail++; console.log(`  ✗ Agent tools error: ${e.message}`); }
+
+console.log("\n15. Self-Healing Diagnostics");
 try {
   const sh = await import("./dist/core/self-healing.js");
   ok("runSelfDiagnostics exported", typeof sh.runSelfDiagnostics === "function");

@@ -451,6 +451,28 @@ soul_plugin_install("${name}")
 
 // ─── Helpers ───
 
+/**
+ * Curated plugin registry — recommended plugins for Soul
+ */
+export function getPluginRegistry(): Array<{
+  name: string;
+  description: string;
+  npm: string;
+  category: string;
+  stars: string;
+}> {
+  return [
+    { name: "Weather", description: "Get weather forecasts for any location", npm: "soul-plugin-weather", category: "life", stars: "recommended" },
+    { name: "Calculator", description: "Advanced math, unit conversion, currency", npm: "soul-plugin-calc", category: "tools", stars: "recommended" },
+    { name: "RSS Reader", description: "Subscribe and read RSS/Atom feeds", npm: "soul-plugin-rss", category: "research", stars: "recommended" },
+    { name: "Pomodoro", description: "Pomodoro timer with focus tracking", npm: "soul-plugin-pomodoro", category: "productivity", stars: "popular" },
+    { name: "Translator", description: "Multi-language translation via LibreTranslate", npm: "soul-plugin-translate", category: "language", stars: "popular" },
+    { name: "Notion Sync", description: "Sync Soul memories to Notion pages", npm: "soul-plugin-notion", category: "sync", stars: "new" },
+    { name: "Calendar", description: "Local calendar with events and reminders", npm: "soul-plugin-calendar", category: "life", stars: "new" },
+    { name: "Fitness", description: "Track workouts, steps, and health metrics", npm: "soul-plugin-fitness", category: "life", stars: "new" },
+  ];
+}
+
 function mapPlugin(row: any): InstalledPlugin {
   return {
     id: row.id,

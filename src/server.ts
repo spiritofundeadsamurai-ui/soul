@@ -1261,6 +1261,108 @@ app.get("/api/whatsapp/status", async (c) => {
   }
 });
 
+// ─── Export/Import API ───
+app.get("/api/export", async (c) => {
+  try {
+    const { exportData } = await import("./core/data-export.js");
+    const result = exportData();
+    return c.json(result);
+  } catch (e: any) { return c.json({ error: e.message }, 500); }
+});
+
+app.post("/api/import", async (c) => {
+  try {
+    const { path } = await c.req.json();
+    if (!path) return c.json({ error: "File path required" }, 400);
+    const { importData } = await import("./core/data-export.js");
+    const result = importData(path);
+    return c.json(result, result.success ? 200 : 400);
+  } catch (e: any) { return c.json({ error: e.message }, 500); }
+});
+
+app.get("/api/exports", async (c) => {
+  try {
+    const { listExports } = await import("./core/data-export.js");
+    return c.json({ exports: listExports() });
+  } catch (e: any) { return c.json({ exports: [] }); }
+});
+
+// ─── Audit Log API ───
+app.get("/api/audit", async (c) => {
+  try {
+    const { getAuditLog, getAuditStats } = await import("./core/audit-log.js");
+    const limit = parseInt(c.req.query("limit") || "50");
+    const category = c.req.query("category") || undefined;
+    return c.json({ stats: getAuditStats(), log: getAuditLog({ limit, category }) });
+  } catch (e: any) { return c.json({ log: [], stats: {} }); }
+});
+
+// ─── Webhook Management API ───
+app.get("/api/webhooks", async (c) => {
+  try {
+    const { listWebhooks } = await import("./core/webhook-outbound.js");
+    return c.json({ webhooks: listWebhooks() });
+  } catch (e: any) { return c.json({ webhooks: [] }); }
+});
+
+app.post("/api/webhooks", async (c) => {
+  try {
+    const body = await c.req.json();
+    const { addWebhook } = await import("./core/webhook-outbound.js");
+    const result = addWebhook(body);
+    return c.json(result);
+  } catch (e: any) { return c.json({ error: e.message }, 500); }
+});
+
+app.delete("/api/webhooks/:id", async (c) => {
+  try {
+    const id = parseInt(c.req.param("id"));
+    const { removeWebhook } = await import("./core/webhook-outbound.js");
+    return c.json({ removed: removeWebhook(id) });
+  } catch (e: any) { return c.json({ error: e.message }, 500); }
+});
+
+// ─── Memory Consolidation API ───
+app.post("/api/memories/consolidate", async (c) => {
+  try {
+    const { consolidateMemories, getConsolidationStats } = await import("./core/memory-consolidation.js");
+    const result = consolidateMemories();
+    return c.json({ ...result, stats: getConsolidationStats() });
+  } catch (e: any) { return c.json({ error: e.message }, 500); }
+});
+
+app.get("/api/memories/consolidation-stats", async (c) => {
+  try {
+    const { getConsolidationStats } = await import("./core/memory-consolidation.js");
+    return c.json(getConsolidationStats());
+  } catch (e: any) { return c.json({ error: e.message }, 500); }
+});
+
+// ─── Goals & Habits API (for Web UI) ───
+app.get("/api/goals", async (c) => {
+  try {
+    const goals = await listAutoGoals();
+    return c.json({ goals });
+  } catch (e: any) { return c.json({ goals: [] }); }
+});
+
+app.get("/api/habits", async (c) => {
+  try {
+    const db = (await import("./db/index.js")).getRawDb();
+    const habits = db.prepare("SELECT * FROM soul_habits ORDER BY streak DESC LIMIT 20").all();
+    return c.json({ habits });
+  } catch { return c.json({ habits: [] }); }
+});
+
+// ─── Scheduled Tasks API ───
+app.get("/api/scheduled-tasks", async (c) => {
+  try {
+    const db = (await import("./db/index.js")).getRawDb();
+    const jobs = db.prepare("SELECT * FROM soul_jobs WHERE is_active = 1 ORDER BY next_run").all();
+    return c.json({ jobs });
+  } catch { return c.json({ jobs: [] }); }
+});
+
 // === Start ===
 
 async function main() {
@@ -1279,9 +1381,45 @@ async function main() {
   ╚═══════════════════════════════════════╝
   `);
 
-  const httpServer = serve({ fetch: app.fetch, port: PORT }, async (info) => {
-    console.log(`  Soul HTTP API: http://localhost:${info.port}/api/health`);
-    console.log(`  Soul WebSocket: ws://localhost:${info.port}/ws`);
+  // HTTPS support: set SOUL_HTTPS=1 and optionally SOUL_CERT/SOUL_KEY paths
+  let serverOptions: any = { fetch: app.fetch, port: PORT };
+  const useHttps = process.env.SOUL_HTTPS === "1";
+  if (useHttps) {
+    try {
+      const { readFileSync, existsSync: fsExists, writeFileSync: fsWrite, mkdirSync: fsMkdir } = await import("fs");
+      const { join: pJoin } = await import("path");
+      const { homedir: hDir } = await import("os");
+
+      const certDir = pJoin(hDir(), ".soul", "certs");
+      const certPath = process.env.SOUL_CERT || pJoin(certDir, "soul.crt");
+      const keyPath = process.env.SOUL_KEY || pJoin(certDir, "soul.key");
+
+      if (!fsExists(certPath) || !fsExists(keyPath)) {
+        // Auto-generate self-signed cert
+        fsMkdir(certDir, { recursive: true });
+        const { execSync } = await import("child_process");
+        execSync(`openssl req -x509 -newkey rsa:2048 -keyout "${keyPath}" -out "${certPath}" -days 365 -nodes -subj "/CN=Soul AI"`, { timeout: 10000 });
+        console.log("  🔒 Generated self-signed TLS certificate");
+      }
+
+      serverOptions = {
+        ...serverOptions,
+        createServer: (await import("https")).createServer,
+        serverOptions: {
+          cert: readFileSync(certPath),
+          key: readFileSync(keyPath),
+        },
+      };
+      console.log("  🔒 HTTPS enabled");
+    } catch (e: any) {
+      console.log(`  ⚠️ HTTPS setup failed (falling back to HTTP): ${e.message}`);
+    }
+  }
+
+  const httpServer = serve(serverOptions, async (info) => {
+    const proto = useHttps ? "https" : "http";
+    console.log(`  Soul ${proto.toUpperCase()} API: ${proto}://localhost:${info.port}/api/health`);
+    console.log(`  Soul WebSocket: ws${useHttps ? "s" : ""}://localhost:${info.port}/ws`);
     startScheduler();
 
     // Initialize vector embeddings (non-blocking)

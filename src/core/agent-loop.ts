@@ -1608,9 +1608,37 @@ export async function runAgentLoop(
       ...options,
       isLeanMode,
     });
-  } catch {
+  } catch (outerErr: any) {
     // Fallback: if dual-brain module fails, run System 2 directly
-    return runSystem2Loop(userMessage, options);
+    try {
+      return await runSystem2Loop(userMessage, options);
+    } catch (innerErr: any) {
+      // FINAL SAFETY NET — never crash, always return a friendly error
+      const errMsg = innerErr?.message || String(innerErr);
+      const isTimeout = /timeout|ETIMEDOUT|ECONNRESET/i.test(errMsg);
+      const isRateLimit = /429|rate.limit|too many/i.test(errMsg);
+      const isAuth = /401|403|unauthorized|invalid.*key/i.test(errMsg);
+
+      let friendlyMsg: string;
+      if (isTimeout) friendlyMsg = "ขออภัยครับ LLM ตอบช้าเกินไป กรุณาลองใหม่อีกครั้ง";
+      else if (isRateLimit) friendlyMsg = "ขออภัยครับ เรียกใช้ LLM บ่อยเกินไป รอสักครู่แล้วลองใหม่";
+      else if (isAuth) friendlyMsg = "ขออภัยครับ API key ของ LLM มีปัญหา กรุณาตรวจสอบการตั้งค่า";
+      else friendlyMsg = `ขออภัยครับ เกิดข้อผิดพลาด: ${errMsg.substring(0, 100)}`;
+
+      console.error(`[Agent] Error recovery: ${errMsg.substring(0, 200)}`);
+      // Log to audit
+      try { const { logAudit } = await import("./audit-log.js"); logAudit({ action: "agent_error", category: "error", detail: errMsg.substring(0, 200) }); } catch { /* ok */ }
+
+      return {
+        reply: friendlyMsg,
+        toolsUsed: [],
+        iterations: 0,
+        totalTokens: 0,
+        model: "error-recovery",
+        provider: "soul-fallback",
+        responseMs: Date.now() - Date.now(),
+      };
+    }
   }
 }
 
@@ -2351,6 +2379,9 @@ export function registerAllInternalTools() {
 
   // ── Native App ──
   registerNativeAppTools_();
+
+  // ── Data Management ──
+  registerDataTools_();
 
   // ── Load active plugins ──
   import("./plugin-marketplace.js").then(({ loadAllPlugins }) => {
@@ -6552,6 +6583,114 @@ function registerNativeAppTools_() {
     execute: async (args) => {
       const { restoreBackup } = await import("./backup.js");
       return (await restoreBackup(args.name)).message;
+    },
+  });
+}
+
+// ─── Data Management Tools ───
+
+function registerDataTools_() {
+  // Export
+  registerInternalTool({
+    name: "soul_export",
+    description: "Export Soul's data (memories, knowledge, goals, habits, people) to a JSON file.",
+    category: "native",
+    parameters: {
+      type: "object",
+      properties: {
+        sections: { type: "string", description: "Comma-separated sections: memories,knowledge,goals,habits,people,learnings (default: all)" },
+      },
+    },
+    execute: async (args) => {
+      const { exportData } = await import("./data-export.js");
+      const sections = args.sections ? args.sections.split(",").map((s: string) => s.trim()) : undefined;
+      const result = exportData({ sections });
+      return result.message;
+    },
+  });
+
+  // Import
+  registerInternalTool({
+    name: "soul_import",
+    description: "Import Soul data from a previously exported JSON file.",
+    category: "native",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Path to the JSON export file" },
+      },
+      required: ["path"],
+    },
+    execute: async (args) => {
+      const { importData } = await import("./data-export.js");
+      return importData(args.path).message;
+    },
+  });
+
+  // Memory consolidation
+  registerInternalTool({
+    name: "soul_consolidate",
+    description: "Clean up memories — remove duplicates and archive old low-value entries.",
+    category: "memory",
+    parameters: { type: "object", properties: {} },
+    execute: async () => {
+      const { consolidateMemories } = await import("./memory-consolidation.js");
+      const r = consolidateMemories();
+      return `Consolidated: ${r.duplicatesRemoved} duplicates removed, ${r.archived} archived. Active memories: ${r.totalBefore} → ${r.totalAfter}`;
+    },
+  });
+
+  // Audit log
+  registerInternalTool({
+    name: "soul_audit",
+    description: "View Soul's audit log — who did what, when.",
+    category: "native",
+    parameters: {
+      type: "object",
+      properties: {
+        limit: { type: "number", description: "Number of entries (default: 20)" },
+        category: { type: "string", description: "Filter by category" },
+      },
+    },
+    execute: async (args) => {
+      const { getAuditLog } = await import("./audit-log.js");
+      const log = getAuditLog({ limit: args.limit || 20, category: args.category });
+      if (log.length === 0) return "No audit log entries yet.";
+      return log.map(e => `[${e.createdAt}] ${e.action} (${e.category}) by ${e.actor}${e.detail ? ": " + e.detail : ""}`).join("\n");
+    },
+  });
+
+  // Webhook management
+  registerInternalTool({
+    name: "soul_webhook_add",
+    description: "Add an outbound webhook — Soul will POST to this URL when events happen.",
+    category: "channel",
+    parameters: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Webhook name" },
+        url: { type: "string", description: "Webhook URL" },
+        events: { type: "string", description: "Comma-separated events: goal_completed,error,backup_created,daily_digest,* (default: *)" },
+      },
+      required: ["name", "url"],
+    },
+    execute: async (args) => {
+      const { addWebhook } = await import("./webhook-outbound.js");
+      const events = args.events ? args.events.split(",").map((e: string) => e.trim()) : ["*"];
+      return addWebhook({ name: args.name, url: args.url, events }).message;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_webhooks",
+    description: "List configured outbound webhooks.",
+    category: "channel",
+    parameters: { type: "object", properties: {} },
+    execute: async () => {
+      const { listWebhooks } = await import("./webhook-outbound.js");
+      const hooks = listWebhooks();
+      if (hooks.length === 0) return "No webhooks configured. Use soul_webhook_add to set one up.";
+      return hooks.map(h => `${h.isActive ? "✅" : "❌"} ${h.name}: ${h.url} (events: ${h.events})${h.failCount > 0 ? ` ⚠️ ${h.failCount} failures` : ""}`).join("\n");
     },
   });
 }

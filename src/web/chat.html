@@ -110,9 +110,13 @@
     <div class="input-area">
       <div class="input-row">
         <textarea id="chatInput" placeholder="Type a message..." rows="1" onkeydown="handleKey(event)" oninput="autoGrow(this)"></textarea>
+        <button id="voiceBtn" onclick="toggleVoice()" title="Voice input" style="background:var(--bg3);border:1px solid var(--border);font-size:16px;">&#127908;</button>
         <button id="sendBtn" onclick="sendMessage()">&#9654;</button>
       </div>
-      <div class="input-hint">Enter to send | Shift+Enter for new line | Sessions sync with <code>soul</code> CLI</div>
+      <div class="input-hint">
+        Enter to send | Shift+Enter for new line | &#127908; Voice input
+        <span style="float:right;cursor:pointer" onclick="toggleTheme()" title="Toggle theme">&#127763;</span>
+      </div>
     </div>
   </div>
 
@@ -371,6 +375,122 @@
       return false;
     }
 
+    // ─── Chat History Persistence (localStorage) ───
+
+    function saveChatLocal() {
+      if (!currentSession) return;
+      const msgs = document.getElementById('messages');
+      const items = [];
+      for (const el of msgs.children) {
+        if (el.classList.contains('typing-indicator')) continue;
+        const role = el.classList.contains('user') ? 'user' : el.classList.contains('assistant') ? 'assistant' : 'system';
+        items.push({ role, text: el.childNodes[0]?.textContent || el.textContent });
+      }
+      try { localStorage.setItem('soul_chat_' + currentSession, JSON.stringify(items)); } catch {}
+    }
+
+    function loadChatLocal(sid) {
+      try {
+        const raw = localStorage.getItem('soul_chat_' + sid);
+        if (!raw) return false;
+        const items = JSON.parse(raw);
+        const container = document.getElementById('messages');
+        container.innerHTML = '';
+        for (const item of items) addMessage(item.role, item.text);
+        return items.length > 0;
+      } catch { return false; }
+    }
+
+    // Auto-save after each message
+    const _origAddMessage = addMessage;
+    addMessage = function(role, content, meta) {
+      _origAddMessage(role, content, meta);
+      saveChatLocal();
+    };
+
+    // ─── Voice Input (Web Speech API) ───
+
+    let _recognition = null;
+    let _isRecording = false;
+
+    function toggleVoice() {
+      if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+        alert('Voice input not supported in this browser. Use Chrome or Edge.');
+        return;
+      }
+
+      if (_isRecording) {
+        _recognition.stop();
+        _isRecording = false;
+        document.getElementById('voiceBtn').style.borderColor = 'var(--border)';
+        return;
+      }
+
+      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+      _recognition = new SR();
+      _recognition.lang = 'th-TH'; // Thai + English mixed
+      _recognition.interimResults = true;
+      _recognition.continuous = false;
+
+      _recognition.onstart = () => {
+        _isRecording = true;
+        document.getElementById('voiceBtn').style.borderColor = 'var(--red)';
+        document.getElementById('voiceBtn').style.color = 'var(--red)';
+      };
+
+      _recognition.onresult = (e) => {
+        let transcript = '';
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          transcript += e.results[i][0].transcript;
+        }
+        document.getElementById('chatInput').value = transcript;
+      };
+
+      _recognition.onend = () => {
+        _isRecording = false;
+        document.getElementById('voiceBtn').style.borderColor = 'var(--border)';
+        document.getElementById('voiceBtn').style.color = 'white';
+        // Auto-send if we got text
+        const input = document.getElementById('chatInput');
+        if (input.value.trim()) sendMessage();
+      };
+
+      _recognition.onerror = () => {
+        _isRecording = false;
+        document.getElementById('voiceBtn').style.borderColor = 'var(--border)';
+        document.getElementById('voiceBtn').style.color = 'white';
+      };
+
+      _recognition.start();
+    }
+
+    // ─── Theme Toggle ───
+
+    function toggleTheme() {
+      const root = document.documentElement;
+      const isDark = getComputedStyle(root).getPropertyValue('--bg').trim() === '#0a0a0f';
+      if (isDark) {
+        root.style.setProperty('--bg', '#f5f5f5');
+        root.style.setProperty('--bg2', '#ffffff');
+        root.style.setProperty('--bg3', '#e8e8ee');
+        root.style.setProperty('--text', '#1a1a2e');
+        root.style.setProperty('--text2', '#666688');
+        root.style.setProperty('--border', '#d0d0e0');
+        localStorage.setItem('soul_theme', 'light');
+      } else {
+        root.style.setProperty('--bg', '#0a0a0f');
+        root.style.setProperty('--bg2', '#12121a');
+        root.style.setProperty('--bg3', '#1a1a2e');
+        root.style.setProperty('--text', '#e0e0e8');
+        root.style.setProperty('--text2', '#8888aa');
+        root.style.setProperty('--border', '#2a2a3e');
+        localStorage.setItem('soul_theme', 'dark');
+      }
+    }
+
+    // Apply saved theme
+    if (localStorage.getItem('soul_theme') === 'light') toggleTheme();
+
     // ─── Init ───
 
     async function init() {
@@ -378,9 +498,24 @@
       if (authed) {
         connectWS();
         loadSessions();
+        // Restore last session from localStorage
+        const lastSession = localStorage.getItem('soul_last_session');
+        if (lastSession) {
+          currentSession = lastSession;
+          if (!loadChatLocal(lastSession)) {
+            switchSession(lastSession);
+          }
+        }
       }
       document.getElementById('chatInput').focus();
     }
+
+    // Save current session ID
+    const _origSwitch = switchSession;
+    switchSession = async function(sid) {
+      localStorage.setItem('soul_last_session', sid);
+      await _origSwitch(sid);
+    };
 
     init();
   </script>

@@ -586,6 +586,34 @@ async function chatOllama(
 
   if (!res.ok) {
     const text = await res.text();
+    // Auto-pull model if not found (404 or "model not found")
+    if ((res.status === 404 || /model.*not found|not found/i.test(text)) && config.model_id) {
+      console.log(`[Ollama] Model "${config.model_id}" not found — auto-pulling...`);
+      try {
+        const pullRes = await fetch(`${config.base_url}/api/pull`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: config.model_id, stream: false }),
+          signal: AbortSignal.timeout(600000), // 10 min for large models
+        });
+        if (pullRes.ok) {
+          console.log(`[Ollama] Successfully pulled "${config.model_id}" — retrying chat`);
+          // Retry the original request
+          const retryRes = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+            signal: AbortSignal.timeout(300000),
+          });
+          if (retryRes.ok) {
+            const retryData = await retryRes.json() as any;
+            return parseOpenAIResponse(retryData, "ollama");
+          }
+        }
+      } catch (pullErr: any) {
+        console.log(`[Ollama] Auto-pull failed: ${pullErr.message}`);
+      }
+    }
     const safeText = redactSensitiveData(text.substring(0, 300));
     throw new Error(`Ollama error (${res.status}): ${safeText}`);
   }
