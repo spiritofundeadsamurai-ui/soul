@@ -339,6 +339,8 @@
         try {
           const res = await fetch(API + '/api/dashboard', { headers: { 'Authorization': 'Bearer ' + token } });
           if (res.ok) { document.getElementById('chatModel').textContent = 'Authenticated'; return true; }
+          // Token expired — clear it
+          localStorage.removeItem('soul_token');
         } catch {}
       }
 

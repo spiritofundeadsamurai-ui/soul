@@ -256,7 +256,14 @@
         const headers = {};
         if (authToken) headers['Authorization'] = 'Bearer ' + authToken;
         const r = await fetch(path, { headers });
-        if (r.status === 401 || r.status === 403) { showLogin(); return null; }
+        if (r.status === 401 || r.status === 403) {
+          // Token expired or invalid — clear and show login
+          authToken = '';
+          sessionStorage.removeItem('soul_token');
+          localStorage.removeItem('soul_token');
+          showLogin();
+          return null;
+        }
         if (!r.ok) return null;
         return await r.json();
       } catch { return null; }
