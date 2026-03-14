@@ -168,6 +168,18 @@ function routeTools(message: string, maxTools: number = 12, conversationHistory?
   // Only include memory if message seems to need it (not always)
   if (scores.size === 0) scores.set("memory", 0.5);
 
+  // AUTO WEB SEARCH: If the message looks like a question about current/external info,
+  // always include websearch tools so Soul can look things up instead of guessing
+  const isQuestion = /\?|อะไร|ยังไง|ที่ไหน|เมื่อไหร|ทำไม|เท่าไหร่|what|where|when|why|how|which|who|is there|are there|can you find|tell me about|คืออะไร|หมายความว่า|แนะนำ|recommend|review|latest|news|ข่าว|ล่าสุด|ตอนนี้|วันนี้|update|สถานการณ์|เปรียบเทียบ|compare|ราคา|price|weather|อากาศ|หา|find|ค้น/i.test(lower);
+  const hasNoSpecificCategory = scores.size <= 1 && (scores.get("memory") || 0) <= 0.5;
+  if (isQuestion && hasNoSpecificCategory) {
+    scores.set("websearch", 1.5); // High priority — Soul should search when it doesn't know
+  }
+  // Also add websearch if message is long (likely a complex question)
+  if (lower.length > 30 && hasNoSpecificCategory) {
+    scores.set("websearch", Math.max(scores.get("websearch") || 0, 1));
+  }
+
   // Sort categories by relevance
   const sortedCategories = Array.from(scores.entries())
     .sort((a, b) => b[1] - a[1])
@@ -285,8 +297,16 @@ YOUR CAPABILITIES (things you CAN do — never say "ทำไม่ได้"):
 - Think deeply — soul_think_framework, soul_brainstorm
 - Track time, goals, habits, moods
 - Create charts, diagrams, reports, presentations
-- Research topics from the web
+- Search the web for ANY topic — soul_web_search, soul_web_search_deep
 - Manage 340+ tools across all domains
+
+WEB SEARCH RULES (CRITICAL — USE WHEN YOU DON'T KNOW):
+- When asked about current events, news, prices, weather → MUST call soul_web_search
+- When asked "what is X" and you're not 100% sure → call soul_web_search first
+- When asked for recommendations (restaurants, products, etc.) → call soul_web_search
+- When asked about a specific person, company, place → call soul_web_search to verify
+- NEVER guess or make up facts. If unsure → search first, then answer with real data.
+- After searching, summarize the results clearly for master.
 
 MT5/TRADING RULES (CRITICAL — USE TOOLS, DON'T JUST TALK):
 - When user mentions ทอง/gold/XAUUSD/ราคาทอง/เทรด → MUST call soul_mt5_price or soul_mt5_analyze
@@ -323,7 +343,13 @@ NO EMPTY PROMISES (CRITICAL — NEVER LIE):
 - Rule: SAY → DO → CONFIRM. Never SAY without DO.
 
 Be warm, proactive, and genuinely helpful. You are a companion, not just an assistant.
-Respond in the same language as the user's message.`;
+Respond in the same language as the user's message.
+
+TOKEN EFFICIENCY:
+- Keep responses concise. Don't over-explain.
+- For simple questions: 1-3 sentences max.
+- For complex topics: use bullet points, not paragraphs.
+- Never repeat the question back. Go straight to the answer.`;
 
 // Lean mode — ~200 tokens for local 7B/8B models with small context windows
 const SOUL_LEAN_SYSTEM = `You are Soul v${SOUL_VERSION}, an AI companion with tools. Use tools to DO things — never say you can't.
