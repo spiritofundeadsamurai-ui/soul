@@ -2025,8 +2025,19 @@ export async function runSystem2Loop(
   } catch { /* thinking chain is non-critical */ }
 
   // Agent loop
+  let lastToolName = "";
+  let sameToolCount = 0;
+
   for (let i = 0; i < maxIterations; i++) {
     options?.onProgress?.({ type: "thinking", iteration: i + 1 });
+
+    // LOOP DETECTION: If we've done 2+ iterations with tool calls but no text, force stop
+    if (i >= 2 && toolsUsed.length >= 2) {
+      messages.push({
+        role: "system",
+        content: "STOP calling tools. You already have results from previous tool calls. Give your FINAL ANSWER to the user NOW in text. Do NOT call any more tools.",
+      });
+    }
 
     // Token budget safety check
     if (totalTokens >= MAX_TOKEN_BUDGET) {
@@ -2316,6 +2327,9 @@ export async function runSystem2Loop(
       const toolName = tc.function.name;
       toolsUsed.push(toolName);
 
+      // Track consecutive same-tool calls for loop detection
+      if (toolName === lastToolName) { sameToolCount++; } else { sameToolCount = 1; lastToolName = toolName; }
+
       let result: string;
       const toolStart = Date.now();
       try {
@@ -2368,10 +2382,20 @@ export async function runSystem2Loop(
     }
   }
 
-  // Max iterations reached — return whatever we have
+  // Max iterations reached — construct reply from tool results if no text response
   const lastAssistant = messages.filter(m => m.role === "assistant").pop();
+  let finalReply = stripThinkTags(lastAssistant?.content || "");
+  if (!finalReply || finalReply.length < 5) {
+    // No text from LLM — build reply from tool results
+    const toolResults = messages.filter(m => m.role === "tool").map(m => m.content).filter(Boolean);
+    if (toolResults.length > 0) {
+      finalReply = `เสร็จเรียบร้อยครับ (${toolsUsed.length > 0 ? [...new Set(toolsUsed)].join(", ") : "done"}):\n${toolResults.slice(-2).join("\n")}`;
+    } else {
+      finalReply = toolsUsed.length > 0 ? `เสร็จเรียบร้อยครับ (${[...new Set(toolsUsed)].join(", ")})` : "(Soul reached maximum thinking iterations)";
+    }
+  }
   return {
-    reply: stripThinkTags(lastAssistant?.content || "(Soul reached maximum thinking iterations)"),
+    reply: finalReply,
     toolsUsed,
     iterations: maxIterations,
     totalTokens,
@@ -2603,13 +2627,13 @@ function registerKnowledgeTools_() {
 function registerThinkingTools_() {
   registerInternalTool({
     name: "soul_think",
-    description: "Apply a thinking framework to analyze a problem. Frameworks: first_principles, inversion, second_order, analogical, systems, bayesian, dialectical, pragmatic, socratic.",
+    description: "Apply a thinking framework to analyze a problem. Frameworks: swot, pros_cons, five_whys, first_principles, six_hats, decision_matrix, second_order, inversion, analogical, systems, bayesian, dialectical, pragmatic, socratic.",
     category: "thinking",
     parameters: {
       type: "object",
       properties: {
         question: { type: "string", description: "The question/problem to think about" },
-        framework: { type: "string", enum: ["first_principles", "inversion", "second_order", "analogical", "systems", "bayesian", "dialectical", "pragmatic", "socratic"], description: "Thinking framework" },
+        framework: { type: "string", enum: ["swot", "pros_cons", "five_whys", "first_principles", "six_hats", "decision_matrix", "second_order", "inversion", "analogical", "systems", "bayesian", "dialectical", "pragmatic", "socratic"], description: "Thinking framework" },
       },
       required: ["question", "framework"],
     },
@@ -2795,6 +2819,48 @@ function registerEmotionalTools_() {
       const { logMood } = await import("./emotional-intelligence.js");
       await logMood(args.mood, args.intensity || 5, args.context || "");
       return `Mood logged: ${args.mood} (intensity: ${args.intensity || 5}/10)`;
+    },
+  });
+
+  // Alias: soul_mood → soul_log_mood (users expect this name)
+  registerInternalTool({
+    name: "soul_mood",
+    description: "Record and track master's current mood/emotion. Use when master expresses feelings.",
+    category: "emotional",
+    parameters: {
+      type: "object",
+      properties: {
+        mood: { type: "string", description: "The mood (happy, sad, stressed, calm, excited, tired, etc.)" },
+        intensity: { type: "number", description: "1-10 intensity" },
+        context: { type: "string", description: "What's causing this mood" },
+      },
+      required: ["mood"],
+    },
+    execute: async (args) => {
+      const { logMood } = await import("./emotional-intelligence.js");
+      await logMood(args.mood, args.intensity || 5, args.context || "");
+      return `บันทึกอารมณ์แล้ว: ${args.mood} (${args.intensity || 5}/10)${args.context ? " — " + args.context : ""}`;
+    },
+  });
+
+  // People memory tool
+  registerInternalTool({
+    name: "soul_person_add",
+    description: "Remember a person — their name, relationship, interests, details. Use when master mentions someone.",
+    category: "people",
+    parameters: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Person's name" },
+        relationship: { type: "string", description: "Relationship to master (friend, colleague, family, etc.)" },
+        details: { type: "string", description: "Details about this person" },
+      },
+      required: ["name"],
+    },
+    execute: async (args) => {
+      const { addPerson } = await import("./people-memory.js");
+      await addPerson({ name: args.name, relationship: args.relationship || "", notes: args.details || "" });
+      return `จำ ${args.name} ไว้แล้ว${args.relationship ? " (" + args.relationship + ")" : ""}`;
     },
   });
 }
