@@ -89,7 +89,7 @@ const CATEGORY_KEYWORDS: Record<string, string[]> = {
   distillation: ["distillation", "training", "fine-tune", "export training", "กลั่น"],
   hardware: ["hardware", "gpu", "ram", "vram", "model recommend", "ฮาร์ดแวร์"],
   classification: ["classify", "classification", "secret", "confidential", "clearance", "compartment", "ความลับ"],
-  filesystem: ["file", "directory", "read file", "list dir", "csv", "project analyze", "ไฟล์"],
+  filesystem: ["file", "directory", "read file", "list dir", "csv", "project analyze", "ไฟล์", "database", "db", "query", "sql", "mysql", "postgres", "mongodb", "mongo", "rest api", "ฐานข้อมูล", "เชื่อมต่อฐาน", "ดึงข้อมูล", "connection", "sheets", "spreadsheet"],
   llm: ["provider", "model", "llm", "ollama", "openai", "groq", "configure model", "โมเดล"],
   websafety: ["phishing", "malware", "scam", "block domain", "url safety", "ปลอดภัย"],
   coworker: ["coworker", "assign work", "team work", "expertise", "submit work", "มอบงาน"],
@@ -2493,6 +2493,9 @@ export function registerAllInternalTools() {
 
   // ── Native App ──
   registerNativeAppTools_();
+
+  // ── Database & API ──
+  registerDataConnectorTools_();
 
   // ── Proactive Soul ──
   registerProactiveTools_();
@@ -6902,6 +6905,66 @@ function registerDataTools_() {
       const hooks = listWebhooks();
       if (hooks.length === 0) return "No webhooks configured. Use soul_webhook_add to set one up.";
       return hooks.map(h => `${h.isActive ? "✅" : "❌"} ${h.name}: ${h.url} (events: ${h.events})${h.failCount > 0 ? ` ⚠️ ${h.failCount} failures` : ""}`).join("\n");
+    },
+  });
+}
+
+// ─── Database & API Connector Tools ───
+
+function registerDataConnectorTools_() {
+  registerInternalTool({
+    name: "soul_db_connect",
+    description: "Connect to a database or API. Types: mysql, postgres, mongodb, rest, sqlite, sheets.",
+    category: "filesystem",
+    parameters: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Connection name" },
+        type: { type: "string", enum: ["mysql", "postgres", "mongodb", "rest", "sqlite", "sheets"], description: "Database type" },
+        config: { type: "string", description: 'JSON config. MySQL/PG: {"host":"localhost","user":"root","password":"pass","database":"mydb"}. MongoDB: {"uri":"mongodb://...","database":"mydb"}. REST: {"baseUrl":"https://api.example.com","headers":{"Authorization":"Bearer xxx"}}. SQLite: {"path":"/path/to/file.db"}. Sheets: {"spreadsheetId":"xxx","apiKey":"xxx"}' },
+      },
+      required: ["name", "type", "config"],
+    },
+    execute: async (args) => {
+      const { addConnection } = await import("./data-connector.js");
+      let config: any;
+      try { config = typeof args.config === "string" ? JSON.parse(args.config) : args.config; }
+      catch { return "Invalid JSON config."; }
+      return addConnection({ name: args.name, type: args.type, config }).message;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_db_query",
+    description: "Query a connected database or API. For SQL: send SQL query. For MongoDB: send JSON {collection, filter}. For REST: send URL path. For Sheets: send range like 'Sheet1!A1:D10'.",
+    category: "filesystem",
+    parameters: {
+      type: "object",
+      properties: {
+        connection: { type: "string", description: "Connection name" },
+        query: { type: "string", description: "SQL query / MongoDB filter JSON / REST path / Sheet range" },
+      },
+      required: ["connection", "query"],
+    },
+    execute: async (args) => {
+      const { queryData, analyzeData } = await import("./data-connector.js");
+      const result = await queryData(args.connection, args.query);
+      if (!result.success) return result.message;
+      const analysis = analyzeData(result.data);
+      return `${result.message}\n\n${analysis}`;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_db_list",
+    description: "List all connected databases and APIs.",
+    category: "filesystem",
+    parameters: { type: "object", properties: {} },
+    execute: async () => {
+      const { listConnections } = await import("./data-connector.js");
+      const conns = listConnections();
+      if (conns.length === 0) return "No database connections. Use soul_db_connect to add one.";
+      return conns.map(c => `${c.isActive ? "✅" : "❌"} ${c.name} [${c.type}]`).join("\n");
     },
   });
 }
