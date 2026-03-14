@@ -1451,6 +1451,15 @@ async function main() {
       } catch { /* ok */ }
     }).catch(() => {});
 
+    // Schedule evolution cycle every 6 hours
+    import("./core/evolution-loop.js").then(({ runEvolutionCycle }) => {
+      setInterval(() => {
+        runEvolutionCycle().then(report => {
+          if (report.includes("Auto-creating")) console.log("[Evolution]", report.split("\n").find((l: string) => l.includes("✅") || l.includes("❌")) || "cycle done");
+        }).catch(() => {});
+      }, 6 * 60 * 60 * 1000); // Every 6 hours
+    }).catch(() => {});
+
     // Initialize vector embeddings (non-blocking)
     import("./memory/embeddings.js").then(async ({ initEmbeddingProvider, startEmbeddingBuilder, getEmbeddingStats }) => {
       try {

@@ -2116,6 +2116,8 @@ export async function runSystem2Loop(
       // ── FORCE-EXECUTE: If message requires action but LLM just talked, retry with stronger instructions ──
       if (i === 0 && toolsUsed.length === 0 && toolDefs.length > 0 && isActionMessage(sanitizedMessage)) {
         // LLM had tools available but chose to just talk — force retry
+        // EVOLUTION: Record this gap
+        try { const { observeGap } = await import("./evolution-loop.js"); observeGap(sanitizedMessage, "no_tool"); } catch {}
         // UPGRADE: Try switching to a known good tool-calling model on retry
         try {
           const { buildCascade } = await import("./model-router.js");
@@ -2178,6 +2180,10 @@ export async function runSystem2Loop(
         ];
         const saidCantDo = cantDoPatterns.some(p => p.test(replyText));
         const hasWebSearch = toolDefs.some(t => t.function.name.includes("web_search"));
+        if (saidCantDo) {
+          // EVOLUTION: Record this gap for future learning
+          try { const { observeGap } = await import("./evolution-loop.js"); observeGap(sanitizedMessage, "cant_do"); } catch {}
+        }
         if (saidCantDo && hasWebSearch) {
           console.log(`[Agent] ⚠️ Soul said "can't do" but has web_search → forcing retry`);
           messages.push({ role: "assistant", content: response.content || "" });
@@ -2592,6 +2598,40 @@ export function registerAllInternalTools() {
       return Object.entries(POPULAR_SYMBOLS).map(([cat, syms]) =>
         `${cat.toUpperCase()}: ${(syms as string[]).join(", ")}`
       ).join("\n");
+    },
+  });
+
+  // ── Evolution ──
+  registerInternalTool({
+    name: "soul_evolve",
+    description: "Run Soul's evolution cycle — analyze gaps, learn patterns, create new tools automatically.",
+    category: "meta",
+    parameters: { type: "object", properties: {} },
+    execute: async () => {
+      const { runEvolutionCycle } = await import("./evolution-loop.js");
+      return runEvolutionCycle();
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_evolution_stats",
+    description: "Show Soul's evolution statistics — gaps found, tools created, patterns learned.",
+    category: "meta",
+    parameters: { type: "object", properties: {} },
+    execute: async () => {
+      const { getEvolutionStats, getTopGaps } = await import("./evolution-loop.js");
+      const stats = getEvolutionStats();
+      const gaps = getTopGaps(5);
+      let reply = `🧬 Evolution Stats:\n`;
+      reply += `  Gaps found: ${stats.totalGaps} (${stats.resolvedGaps} resolved)\n`;
+      reply += `  Tools auto-created: ${stats.toolsCreated}\n`;
+      reply += `  Evolution cycles: ${stats.cyclesRun}\n`;
+      reply += `  Top gap type: ${stats.topGapType}\n`;
+      if (gaps.length > 0) {
+        reply += `\nTop gaps:\n`;
+        gaps.forEach(g => { reply += `  ${g.frequency}x [${g.gapType}] "${g.query.substring(0, 50)}"\n`; });
+      }
+      return reply;
     },
   });
 
