@@ -1,15 +1,14 @@
 {
   "name": "soul-ai",
   "version": "2.0.0",
-  "description": "Soul — AI Companion with 323+ tools, self-healing, conversation branching, parallel agents, multi-channel (Telegram/Slack/Discord). Local-first, works with Ollama (free) or any LLM API.",
+  "description": "Soul — AI that remembers everything, thinks independently, and bonds with you. 211+ tools, 5 channels, vector memory, self-healing. Works with Ollama (free) or any LLM.",
   "main": "dist/index.js",
   "bin": {
+    "soul-ai": "dist/cli.js",
     "soul": "dist/cli.js",
     "soul-mcp": "dist/index.js",
     "soul-server": "dist/server.js",
-    "soul-setup": "dist/setup-cli.js",
-    "soul-learn": "dist/soul-learn.js",
-    "soul-bridge": "dist/soul-bridge.js"
+    "soul-setup": "dist/setup-cli.js"
   },
   "directories": {
     "test": "tests"
