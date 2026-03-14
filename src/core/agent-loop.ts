@@ -1855,6 +1855,15 @@ export async function runSystem2Loop(
   const wrapWithTimeout = <T>(p: Promise<T>, ms: number): Promise<T | null> =>
     Promise.race([p, new Promise<null>(resolve => setTimeout(() => resolve(null), ms))]);
 
+  // ── Expertise injection — think like an expert when relevant ──
+  try {
+    const { getExpertisePrompt } = await import("./expertise.js");
+    const expertisePrompt = getExpertisePrompt(sanitizedMessage);
+    if (expertisePrompt) {
+      messages.push({ role: "system", content: expertisePrompt });
+    }
+  } catch { /* expertise module not critical */ }
+
   const CTX_TIMEOUT = 8000;
   const contextResults = await Promise.allSettled([
     // Memory search
