@@ -8,6 +8,10 @@
  */
 
 import { remember } from "../memory/memory-engine.js";
+import { execSync } from "child_process";
+import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, rmdirSync } from "fs";
+import { join } from "path";
+import { tmpdir } from "os";
 
 interface VideoInfo {
   title: string;
@@ -185,5 +189,181 @@ export async function learnFromYouTube(url: string): Promise<{
     message: hasTranscript
       ? `เรียนรู้จาก "${info.title}" เรียบร้อย — ${keyPoints.length} key points จำไว้แล้ว`
       : `จำวิดีโอ "${info.title}" ไว้แล้ว แต่ไม่มี subtitle ให้ดึง transcript`,
+  };
+}
+
+// ─── Video Vision — Extract frames + analyze with Gemini Vision ───
+
+/**
+ * Check if ffmpeg is available
+ */
+export function hasFfmpeg(): boolean {
+  try { execSync("ffmpeg -version", { stdio: "pipe", timeout: 5000 }); return true; } catch { return false; }
+}
+
+/**
+ * Download YouTube video (audio+video) to temp file using yt-dlp or fallback
+ */
+async function downloadVideo(url: string): Promise<string | null> {
+  const tempDir = join(tmpdir(), "soul-video-" + Date.now());
+  mkdirSync(tempDir, { recursive: true });
+  const outPath = join(tempDir, "video.mp4");
+
+  // Try yt-dlp first
+  try {
+    execSync(`yt-dlp -f "best[height<=720]" -o "${outPath}" "${url}"`, { timeout: 120000, stdio: "pipe" });
+    if (existsSync(outPath)) return outPath;
+  } catch { /* yt-dlp not available */ }
+
+  // Fallback: try youtube-dl
+  try {
+    execSync(`youtube-dl -f "best[height<=720]" -o "${outPath}" "${url}"`, { timeout: 120000, stdio: "pipe" });
+    if (existsSync(outPath)) return outPath;
+  } catch { /* youtube-dl not available */ }
+
+  return null;
+}
+
+/**
+ * Extract frames from video file using ffmpeg
+ * One frame every N seconds
+ */
+export function extractFrames(videoPath: string, intervalSec: number = 30, maxFrames: number = 10): string[] {
+  if (!hasFfmpeg()) return [];
+  const frameDir = join(tmpdir(), "soul-frames-" + Date.now());
+  mkdirSync(frameDir, { recursive: true });
+
+  try {
+    execSync(
+      `ffmpeg -i "${videoPath}" -vf "fps=1/${intervalSec}" -frames:v ${maxFrames} -q:v 2 "${join(frameDir, "frame_%03d.jpg")}"`,
+      { timeout: 60000, stdio: "pipe" },
+    );
+    return readdirSync(frameDir)
+      .filter(f => f.endsWith(".jpg"))
+      .sort()
+      .map(f => join(frameDir, f));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Analyze video frames using Gemini Vision API
+ */
+export async function analyzeFrames(framePaths: string[], context?: string): Promise<string> {
+  if (framePaths.length === 0) return "No frames to analyze.";
+
+  try {
+    // Use Gemini Vision API
+    const { getRawDb } = await import("../db/index.js");
+    const db = getRawDb();
+    const geminiConfig = db.prepare(
+      "SELECT api_key FROM soul_llm_config WHERE provider_id = 'gemini' AND is_active = 1"
+    ).get() as any;
+
+    if (!geminiConfig?.api_key) return "Gemini API key needed for vision analysis.";
+
+    let apiKey = geminiConfig.api_key;
+    try {
+      const { safeDecryptSecret } = await import("./security.js");
+      const decrypted = safeDecryptSecret(apiKey);
+      if (decrypted) apiKey = decrypted;
+    } catch { /* use raw */ }
+
+    // Encode frames as base64
+    const imageParts = framePaths.slice(0, 5).map(fp => {
+      const data = readFileSync(fp);
+      return {
+        inlineData: {
+          mimeType: "image/jpeg",
+          data: data.toString("base64"),
+        },
+      };
+    });
+
+    const prompt = context
+      ? `Analyze these video frames. Context: ${context}\n\nDescribe what you see in each frame, then summarize the overall content. Respond in Thai.`
+      : "Analyze these video frames. Describe what you see and summarize the overall video content. Respond in Thai.";
+
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{
+            parts: [
+              { text: prompt },
+              ...imageParts,
+            ],
+          }],
+        }),
+        signal: AbortSignal.timeout(30000),
+      },
+    );
+
+    if (!response.ok) return `Vision API error: ${response.status}`;
+    const data = await response.json() as any;
+    return data.candidates?.[0]?.content?.parts?.[0]?.text || "No analysis available.";
+  } catch (e: any) {
+    return `Vision analysis failed: ${e.message}`;
+  }
+}
+
+/**
+ * Full video analysis: download → extract frames → vision AI → summarize
+ */
+export async function analyzeVideo(url: string): Promise<{
+  success: boolean;
+  title: string;
+  frameCount: number;
+  analysis: string;
+  message: string;
+}> {
+  // Get info first
+  const videoId = extractYouTubeId(url);
+  const info = videoId ? await getYouTubeInfo(videoId) : { title: url, channel: "Unknown" };
+
+  // Download video
+  const videoPath = await downloadVideo(url);
+  if (!videoPath) {
+    return {
+      success: false, title: info.title, frameCount: 0, analysis: "",
+      message: "ดาวน์โหลดวิดีโอไม่ได้ — ต้องติดตั้ง yt-dlp: pip install yt-dlp",
+    };
+  }
+
+  // Extract frames
+  const frames = extractFrames(videoPath, 30, 8);
+  if (frames.length === 0) {
+    return {
+      success: false, title: info.title, frameCount: 0, analysis: "",
+      message: "ดึง frame ไม่ได้ — ตรวจสอบ ffmpeg",
+    };
+  }
+
+  // Analyze with Vision AI
+  const transcript = videoId ? await getYouTubeTranscript(videoId) : "";
+  const analysis = await analyzeFrames(frames, transcript ? `Transcript: ${transcript.substring(0, 2000)}` : undefined);
+
+  // Remember
+  await remember({
+    content: `[Video Analysis] "${info.title}"\nFrames: ${frames.length}\nAnalysis: ${analysis.substring(0, 500)}`,
+    type: "knowledge" as any,
+    tags: ["video", "vision", "analysis"],
+    source: "video-learner",
+  });
+
+  // Cleanup frames
+  try {
+    for (const f of frames) unlinkSync(f);
+  } catch { /* ok */ }
+
+  return {
+    success: true,
+    title: info.title,
+    frameCount: frames.length,
+    analysis,
+    message: `วิเคราะห์วิดีโอ "${info.title}" เสร็จ — ${frames.length} frames, vision AI analyzed`,
   };
 }

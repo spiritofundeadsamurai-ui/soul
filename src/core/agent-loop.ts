@@ -2523,6 +2523,24 @@ export function registerAllInternalTools() {
     },
   });
 
+  registerInternalTool({
+    name: "soul_analyze_video",
+    description: "Analyze a video by extracting frames and using Vision AI. Sees images + reads transcript. Requires ffmpeg + yt-dlp.",
+    category: "research",
+    parameters: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "Video URL (YouTube or direct)" },
+      },
+      required: ["url"],
+    },
+    execute: async (args) => {
+      const { analyzeVideo } = await import("./video-learner.js");
+      const r = await analyzeVideo(args.url);
+      return r.success ? `🎬 ${r.title}\n\n${r.analysis}` : r.message;
+    },
+  });
+
   // ── Code Runner ──
   registerCodeRunnerTools_();
 

@@ -120,7 +120,8 @@
       "Bash(for f:*)",
       "Bash(do echo:*)",
       "Read(//c/Users/computer/AppData/Local/Temp/claude/D--Programer-Project-soul/95aa0ce0-c4c4-4e5d-82a6-c9b3bc9e5d18/**)",
-      "Bash(done)"
+      "Bash(done)",
+      "Bash(rm:*)"
     ]
   },
   "hooks": {
