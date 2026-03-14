@@ -168,15 +168,13 @@ function routeTools(message: string, maxTools: number = 12, conversationHistory?
   // Only include memory if message seems to need it (not always)
   if (scores.size === 0) scores.set("memory", 0.5);
 
-  // AUTO WEB SEARCH: If the message looks like a question about current/external info,
-  // always include websearch tools so Soul can look things up instead of guessing
-  const isQuestion = /\?|อะไร|ยังไง|ที่ไหน|เมื่อไหร|ทำไม|เท่าไหร่|what|where|when|why|how|which|who|is there|are there|can you find|tell me about|คืออะไร|หมายความว่า|แนะนำ|recommend|review|latest|news|ข่าว|ล่าสุด|ตอนนี้|วันนี้|update|สถานการณ์|เปรียบเทียบ|compare|ราคา|price|weather|อากาศ|หา|find|ค้น/i.test(lower);
-  const hasNoSpecificCategory = scores.size <= 1 && (scores.get("memory") || 0) <= 0.5;
-  if (isQuestion && hasNoSpecificCategory) {
-    scores.set("websearch", 1.5); // High priority — Soul should search when it doesn't know
-  }
-  // Also add websearch if message is long (likely a complex question)
-  if (lower.length > 30 && hasNoSpecificCategory) {
+  // AUTO WEB SEARCH: Always include websearch as a fallback tool
+  // so Soul can look things up instead of saying "ทำไม่ได้"
+  // Only skip for pure memory/channel/code operations that clearly don't need web
+  const pureInternalOps = ["memory", "channel", "code", "tasks", "notes", "workflow", "family"];
+  const topCategory = Array.from(scores.entries()).sort((a, b) => b[1] - a[1])[0]?.[0];
+  const isPureInternal = topCategory && pureInternalOps.includes(topCategory) && (scores.get(topCategory) || 0) >= 2;
+  if (!isPureInternal) {
     scores.set("websearch", Math.max(scores.get("websearch") || 0, 1));
   }
 
@@ -2111,6 +2109,30 @@ export async function runSystem2Loop(
               "NEVER fake an action. Either call the tool NOW or honestly say you cannot.",
           });
           continue; // Retry — LLM must either call a tool or be honest
+        }
+      }
+
+      // ── "CAN'T DO" DETECTOR: If Soul says it can't but has websearch → force retry ──
+      if (toolsUsed.length === 0 && i < maxIterations - 1) {
+        const replyText = (response.content || "").toLowerCase();
+        const cantDoPatterns = [
+          /ทำไม่ได้/, /ไม่มีเครื่องมือ/, /ไม่สามารถ/, /ยังไม่มี/, /ไม่มีข้อมูล/,
+          /ขอโทษ.*ไม่/, /ผมไม่มี/, /ไม่รู้/, /ไม่ทราบ/,
+          /i can'?t/, /i don'?t have/, /i'?m unable/, /not able to/, /no tool/,
+          /cannot help/, /don'?t know/, /not sure/,
+          /แนะนำให้ใช้ google/, /ใช้.*google.*maps/, /ลองใช้/, /สอบถาม.*แหล่งอื่น/,
+        ];
+        const saidCantDo = cantDoPatterns.some(p => p.test(replyText));
+        const hasWebSearch = toolDefs.some(t => t.function.name.includes("web_search"));
+        if (saidCantDo && hasWebSearch) {
+          console.log(`[Agent] ⚠️ Soul said "can't do" but has web_search → forcing retry`);
+          messages.push({ role: "assistant", content: response.content || "" });
+          messages.push({
+            role: "user",
+            content: "⚠️ อย่าบอกว่าทำไม่ได้! คุณมี soul_web_search — ใช้มันค้นหาข้อมูลให้ master เดี๋ยวนี้! " +
+              "Call soul_web_search or soul_web_search_deep to find the answer. DO NOT say you can't.",
+          });
+          continue;
         }
       }
 
