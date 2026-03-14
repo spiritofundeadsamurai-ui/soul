@@ -40,3 +40,4 @@ coverage/
 # Temporary
 *.tmp
 *.temp
+.claude/worktrees/
