@@ -54,8 +54,8 @@ export function getToolsByCategory(category: string): InternalTool[] {
 const CATEGORY_KEYWORDS: Record<string, string[]> = {
   memory: ["remember", "recall", "forget", "memory", "search", "find", "know", "learned", "จำ", "ค้นหา", "ความจำ", "เรียนรู้"],
   knowledge: ["knowledge", "know", "fact", "learn", "pattern", "technique", "ความรู้", "เทคนิค", "แพทเทิร์น"],
-  thinking: ["think", "analyze", "reason", "decide", "brainstorm", "decompose", "framework", "คิด", "วิเคราะห์", "ตัดสินใจ"],
-  life: ["goal", "habit", "reflect", "motivate", "advice", "life", "เป้าหมาย", "นิสัย", "ชีวิต", "แนะนำ"],
+  thinking: ["think", "analyze", "analysis", "reason", "decide", "brainstorm", "decompose", "framework", "swot", "pros cons", "คิด", "วิเคราะห์", "ตัดสินใจ", "วิเคราะห์เชิงลึก"],
+  life: ["goal", "habit", "reflect", "motivate", "advice", "life", "เป้าหมาย", "นิสัย", "ชีวิต", "แนะนำ", "อัพเดตเป้า", "progress"],
   creative: ["write", "story", "poem", "teach", "empathy", "communicate", "เขียน", "สอน", "สื่อสาร"],
   emotional: ["mood", "emotion", "feeling", "stress", "happy", "sad", "อารมณ์", "ความรู้สึก", "เครียด"],
   code: ["code", "snippet", "template", "pattern", "stack", "programming", "โค้ด", "โปรแกรม", "เขียนไฟล์", "write file", "edit file", "แก้ไฟล์", "สร้างไฟล์", "create file", "run", "execute", "รันคำสั่ง", "npm", "pip", "git", "commit", "push", "สร้างโปรเจค", "scaffold", "project", "test", "lint"],
@@ -78,10 +78,11 @@ const CATEGORY_KEYWORDS: Record<string, string[]> = {
   digest: ["digest", "summary", "daily", "weekly", "สรุป", "รายวัน"],
   brain: ["brain pack", "export", "import", "private mode", "open mode", "โหมด"],
   network: ["network", "share", "peer", "vote", "เครือข่าย", "sync", "collective", "แชร์ความรู้", "แชร์ประสบการณ์", "เพื่อน soul", "soul อื่น", "proposal", "discover", "hub"],
-  sync: ["sync", "device", "backup", "ซิงค์"],
-  scheduler: ["schedule", "cron", "briefing", "health check", "ตาราง"],
+  sync: ["sync", "device", "ซิงค์"],
+  scheduler: ["schedule", "cron", "health check", "ตาราง", "ตรวจระบบ", "สุขภาพระบบ", "ตรวจสุขภาพ"],
   channel: ["telegram", "discord", "whatsapp", "line", "ไลน์", "วอทแอป", "send message", "channel", "ช่อง", "connect", "เชื่อมต่อ", "ต่อ", "bot token", "token", "webhook", "update soul", "อัพเดต", "self-update", "ติดตั้ง", "setup"],
-  notification: ["notify", "notification", "alert", "แจ้งเตือน"],
+  notification: ["notify", "notification", "alert", "แจ้งเตือน", "morning", "briefing", "morning briefing", "เช้า"],
+  native: ["backup", "restore", "export data", "import data", "audit", "audit log", "desktop", "tray", "startup", "สำรอง", "กู้คืน", "ส่งออก", "นำเข้า"],
   multimodal: ["image", "audio", "document", "see", "listen", "read doc", "รูป", "เสียง"],
   skill: ["skill", "execute", "approve", "ทักษะ"],
   meta: ["growth", "self-review", "explain reasoning", "prime context", "เติบโต"],
@@ -908,7 +909,7 @@ export function isActionMessage(message: string): boolean {
   if (/ทำอะไรได้|ทำอะไรเป็น|what can you|who are you|คุณคือ|คุณเป็น/i.test(lower)) return false;
 
   // Action verbs (Thai)
-  const thaiActionVerbs = /สร้าง|ทำ|ส่ง|เขียน|อ่าน|ดู|เปิด|ปิด|เริ่ม|หยุด|ตั้ง|แก้|ลบ|เพิ่ม|บันทึก|จำ|ค้น|หา|วิเคราะห์|ตรวจ|สรุป|รัน|เชื่อม|ต่อ|ดาวน์โหลด|อัพ|แชร์|ซิงค์|เทรด|ซื้อ|ขาย|เฝ้า|ติดตาม|แจ้ง|จัด|เตรียม|คำนวณ|เปรียบ|แปลง|จับ|โอน|ส่ง|พัฒนา|ออกแบบ|ทดสอบ|อัพเดต|ติดตั้ง|สั่ง|มอบ|กำหนด|ตั้งค่า/;
+  const thaiActionVerbs = /สร้าง|ทำ|ส่ง|เขียน|อ่าน|ดู|เปิด|ปิด|เริ่ม|หยุด|ตั้ง|แก้|ลบ|เพิ่ม|บันทึก|จำ|ค้น|หา|วิเคราะห์|ตรวจ|สรุป|รัน|เชื่อม|ต่อ|ดาวน์โหลด|อัพ|แชร์|ซิงค์|เทรด|ซื้อ|ขาย|เฝ้า|ติดตาม|แจ้ง|จัด|เตรียม|คำนวณ|เปรียบ|แปลง|จับ|โอน|ส่ง|พัฒนา|ออกแบบ|ทดสอบ|อัพเดต|ติดตั้ง|สั่ง|มอบ|กำหนด|ตั้งค่า|สอน|แนะนำ|จด|สำรอง|กู้|ส่งออก|นำเข้า/;
   // Action verbs (English)
   const engActionVerbs = /\b(create|make|send|write|read|open|close|start|stop|set|fix|delete|add|save|remember|search|find|analyze|check|summarize|run|connect|download|upload|share|sync|trade|buy|sell|monitor|track|alert|prepare|calculate|compare|convert|export|import|generate|build|test|update|install|configure|assign|schedule|deploy)\b/i;
 
@@ -2787,6 +2788,74 @@ function registerLifeTools_() {
     execute: async () => {
       const { getMotivation } = await import("./life.js");
       return await getMotivation();
+    },
+  });
+
+  // Habit tracking
+  registerInternalTool({
+    name: "soul_habit",
+    description: "Create a new habit to track. Examples: อ่านหนังสือ, ออกกำลังกาย, ทำสมาธิ",
+    category: "life",
+    parameters: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Habit name" },
+        frequency: { type: "string", enum: ["daily", "weekly", "3x_week"], description: "How often" },
+        description: { type: "string", description: "Details about this habit" },
+      },
+      required: ["name"],
+    },
+    execute: async (args) => {
+      const { createHabit } = await import("./life.js");
+      await createHabit({ name: args.name, frequency: args.frequency || "daily", category: args.description || "personal" });
+      return `สร้างนิสัย "${args.name}" (${args.frequency || "daily"}) เรียบร้อย จะติดตามให้ครับ`;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_habit_done",
+    description: "Mark a habit as completed for today.",
+    category: "life",
+    parameters: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Habit name" },
+      },
+      required: ["name"],
+    },
+    execute: async (args) => {
+      const { completeHabit } = await import("./life.js");
+      const result = await completeHabit(args.name);
+      return typeof result === "string" ? result : `บันทึกว่าทำ "${args.name}" วันนี้แล้ว`;
+    },
+  });
+
+  // Goal progress update
+  registerInternalTool({
+    name: "soul_update_goal",
+    description: "Update progress of an existing goal.",
+    category: "life",
+    parameters: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "Goal title (or partial match)" },
+        progress: { type: "number", description: "New progress percentage (0-100)" },
+        note: { type: "string", description: "Progress note" },
+      },
+      required: ["title"],
+    },
+    execute: async (args) => {
+      const { getRawDb } = await import("../db/index.js");
+      const db = getRawDb();
+      const goal = db.prepare("SELECT * FROM soul_goals WHERE title LIKE ? AND status = 'active' LIMIT 1").get(`%${args.title}%`) as any;
+      if (!goal) return `ไม่พบเป้าหมาย "${args.title}"`;
+      if (args.progress !== undefined) {
+        db.prepare("UPDATE soul_goals SET progress = ?, updated_at = datetime('now') WHERE id = ?").run(args.progress, goal.id);
+      }
+      if (args.note) {
+        db.prepare("UPDATE soul_goals SET description = description || ? || char(10), updated_at = datetime('now') WHERE id = ?").run(`\n[${new Date().toISOString().substring(0, 10)}] ${args.note}`, goal.id);
+      }
+      return `อัพเดตเป้าหมาย "${goal.title}" → ${args.progress !== undefined ? args.progress + "%" : "noted"}${args.note ? " — " + args.note : ""}`;
     },
   });
 }
