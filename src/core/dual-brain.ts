@@ -152,7 +152,10 @@ export async function processDualBrain(
     if (reflexResult.handled) {
       console.log(`[DualBrain] System1 match: type=${reflexResult.reflexType} conf=${reflexResult.confidence} isAction=${isAction} threshold=${threshold * 100} → ${isAction ? "SKIP (action msg)" : "USE"}`);
     }
-    if (!isAction && reflexResult.handled && reflexResult.confidence && reflexResult.confidence >= threshold * 100) {
+    // Also skip System 1 for personal questions that need memory search
+    const isPersonalQ = /(?:ผม|ฉัน|ของผม|ของฉัน|i |my ).*(?:อะไร|ไหน|เมื่อไหร่|ยังไง|what|where|when|how|\?)/i.test(userMessage)
+      || /(?:อะไร|ไหน|เมื่อไหร่).*(?:ผม|ฉัน|ของผม)/i.test(userMessage);
+    if (!isAction && !isPersonalQ && reflexResult.handled && reflexResult.confidence && reflexResult.confidence >= threshold * 100) {
       trackMetrics("system1", userMessage, reflexResult.reflexType, reflexResult.latencyMs, reflexResult.confidence, undefined, false);
       return {
         reply: reflexResult.response || "",

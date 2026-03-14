@@ -137,8 +137,15 @@ function routeTools(message: string, maxTools: number = 12, conversationHistory?
 
   // Fast path: very short messages (< 15 chars) rarely need tools
   // BUT: action messages ALWAYS need tools regardless of length (e.g. "ราคาทอง" = 8 chars)
-  if (lower.length < 15 && !isActionMessage(message) && !lower.includes("จำ") && !lower.includes("remember") && !lower.includes("search")) {
+  // AND: personal questions always need memory search (e.g. "ผมแพ้อะไร" = 12 chars)
+  const isPersonalQuestion = /(?:ผม|ฉัน|ของผม|ของฉัน|i |my ).*(?:อะไร|ไหน|เมื่อไหร่|ยังไง|what|where|when|how|\?)/i.test(lower)
+    || /(?:อะไร|ไหน|เมื่อไหร่).*(?:ผม|ฉัน|ของผม)/i.test(lower);
+  if (lower.length < 15 && !isActionMessage(message) && !isPersonalQuestion && !lower.includes("จำ") && !lower.includes("remember") && !lower.includes("search")) {
     return [];
+  }
+  // Personal questions → always include memory tools
+  if (isPersonalQuestion) {
+    return [...getToolsByCategory("memory"), ...getToolsByCategory("websearch")].slice(0, 12);
   }
 
   // Build context string: current message + recent conversation history
@@ -1710,9 +1717,13 @@ export async function runSystem2Loop(
     } catch { /* not a valid path, let LLM handle */ }
   }
 
+  // Personal question detection (used to skip cache + knowledge lookup)
+  const isPersonalQ = /(?:ผม|ฉัน|ของผม|ของฉัน|i |my ).*(?:อะไร|ไหน|เมื่อไหร่|ยังไง|what|where|when|how|\?)/i.test(userMessage)
+    || /(?:อะไร|ไหน|เมื่อไหร่).*(?:ผม|ฉัน|ของผม)/i.test(userMessage);
+
   // ── Layer 1: Response Cache ──
-  // CRITICAL: Skip cache for action messages — they need REAL tool execution, not stale cached responses
-  if (!options?.skipCache && !isActionMessage(userMessage)) {
+  // CRITICAL: Skip cache for action/personal messages — they need REAL tool execution
+  if (!options?.skipCache && !isActionMessage(userMessage) && !isPersonalQ) {
     const cached = getCachedResponse(userMessage);
     if (cached) {
       options?.onProgress?.({ type: "cache_hit" });
@@ -1737,7 +1748,8 @@ export async function runSystem2Loop(
 
   // ── Layer 2: Knowledge-First Lookup ──
   // Skip for action messages — they need real tool execution, not static knowledge
-  const knowledgeResult = isActionMessage(userMessage) ? null : await knowledgeFirstLookup(userMessage);
+  // Skip knowledge-first for personal questions ("ผมแพ้อะไร") — they need memory search
+  const knowledgeResult = (isActionMessage(userMessage) || isPersonalQ) ? null : await knowledgeFirstLookup(userMessage);
   if (knowledgeResult?.found) {
     options?.onProgress?.({ type: "knowledge_hit", source: knowledgeResult.source || "knowledge" });
     // Cache this for next time
