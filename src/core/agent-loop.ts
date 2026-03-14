@@ -6506,4 +6506,52 @@ function registerNativeAppTools_() {
       return registerStartup().message;
     },
   });
+
+  // ─── Backup Tools ───
+  registerInternalTool({
+    name: "soul_backup",
+    description: "Create a backup of Soul's entire database (memories, learnings, settings).",
+    category: "native",
+    parameters: {
+      type: "object",
+      properties: {
+        label: { type: "string", description: "Optional label for the backup" },
+      },
+    },
+    execute: async (args) => {
+      const { createBackup } = await import("./backup.js");
+      const result = createBackup(args.label);
+      return result.message;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_backup_list",
+    description: "List all available backups with dates and sizes.",
+    category: "native",
+    parameters: { type: "object", properties: {} },
+    execute: async () => {
+      const { listBackups } = await import("./backup.js");
+      const backups = listBackups();
+      if (backups.length === 0) return "No backups found. Use soul_backup to create one.";
+      return backups.map((b, i) => `${i + 1}. ${b.name} (${b.sizeMB} MB) — ${b.createdAt.toISOString().substring(0, 16)}`).join("\n");
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_backup_restore",
+    description: "Restore Soul's database from a backup. WARNING: This replaces the current database!",
+    category: "native",
+    parameters: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Backup filename to restore from" },
+      },
+      required: ["name"],
+    },
+    execute: async (args) => {
+      const { restoreBackup } = await import("./backup.js");
+      return (await restoreBackup(args.name)).message;
+    },
+  });
 }

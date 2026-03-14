@@ -1506,6 +1506,7 @@ export async function checkForUpdate(): Promise<{
 let _waSocket: any = null;
 let _waConnected = false;
 let _waQrCode: string | null = null;
+let _waReconnectAttempt = 0;
 let _waChannelId: number | null = null;
 let _waChannelName: string | null = null;
 
@@ -1575,15 +1576,23 @@ export async function whatsappAutoSetup(channelName?: string): Promise<{
         _waConnected = false;
         const statusCode = (lastDisconnect?.error as any)?.output?.statusCode;
         if (statusCode !== DisconnectReason.loggedOut) {
-          console.log("[WhatsApp] Reconnecting...");
-          setTimeout(() => whatsappAutoSetup(name), 3000);
+          // Exponential backoff: 3s, 6s, 12s, 24s, 48s, max 60s
+          _waReconnectAttempt = Math.min((_waReconnectAttempt || 0) + 1, 6);
+          const delay = Math.min(3000 * Math.pow(2, _waReconnectAttempt - 1), 60000);
+          console.log(`[WhatsApp] Reconnecting in ${delay / 1000}s (attempt ${_waReconnectAttempt})...`);
+          if (_waReconnectAttempt >= 5) {
+            console.log("[WhatsApp] Multiple reconnect failures. Check your internet or restart Soul.");
+          }
+          setTimeout(() => whatsappAutoSetup(name), delay);
         } else {
           console.log("[WhatsApp] Logged out. Remove auth folder to re-connect.");
+          _waReconnectAttempt = 0;
         }
       } else if (connection === "open") {
         _waConnected = true;
         _waQrCode = null;
         _waChannelName = name;
+        _waReconnectAttempt = 0; // Reset backoff on success
         console.log("[WhatsApp] Connected!");
 
         // Register channel

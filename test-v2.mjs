@@ -116,7 +116,26 @@ try {
 } catch (e) { fail++; console.log(`  ✗ Model router error: ${e.message}`); }
 
 // ─── 8. Self-Healing (Embedding + Tool-calling checks) ───
-console.log("\n8. Self-Healing Diagnostics");
+// ─── 8. Backup System ───
+console.log("\n8. Backup System");
+try {
+  const bk = await import("./dist/core/backup.js");
+  ok("Module loads", typeof bk.createBackup === "function");
+  ok("listBackups exported", typeof bk.listBackups === "function");
+  ok("restoreBackup exported", typeof bk.restoreBackup === "function");
+  ok("verifyBackup exported", typeof bk.verifyBackup === "function");
+  ok("getBackupStats exported", typeof bk.getBackupStats === "function");
+  const result = bk.createBackup("test");
+  ok("createBackup works", result.success, result.message);
+  const stats = bk.getBackupStats();
+  ok("Has backups", stats.totalBackups > 0, `${stats.totalBackups} backups`);
+  if (result.success) {
+    const verify = await bk.verifyBackup(result.path);
+    ok("Backup is valid", verify.valid, verify.message);
+  }
+} catch (e) { fail++; console.log(`  ✗ Backup error: ${e.message}`); }
+
+console.log("\n9. Self-Healing Diagnostics");
 try {
   const sh = await import("./dist/core/self-healing.js");
   ok("runSelfDiagnostics exported", typeof sh.runSelfDiagnostics === "function");

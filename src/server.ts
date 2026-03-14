@@ -218,6 +218,103 @@ app.get("/api/health", async (c) => {
   });
 });
 
+// ─── Monitoring Dashboard API ───
+app.get("/api/dashboard", async (c) => {
+  const status = await soul.getStatus();
+  const dashboard: Record<string, any> = {
+    timestamp: new Date().toISOString(),
+    soul: { version: status.version, uptime: status.uptime, master: status.masterName },
+  };
+
+  // Memory stats
+  try { dashboard.memory = getMemoryStats(); } catch { dashboard.memory = null; }
+
+  // Embedding stats
+  try {
+    const { getEmbeddingStats } = await import("./memory/embeddings.js");
+    dashboard.embeddings = getEmbeddingStats();
+  } catch { dashboard.embeddings = null; }
+
+  // LLM config
+  try {
+    const config = getDefaultConfig();
+    const providers = listConfiguredProviders();
+    dashboard.llm = { default: config ? `${config.providerId}/${config.modelId}` : null, providers: providers.length };
+  } catch { dashboard.llm = null; }
+
+  // Channels
+  try {
+    const { listChannels } = await import("./core/channels.js");
+    const channels = await listChannels();
+    dashboard.channels = channels.map((ch: any) => ({ name: ch.name, type: ch.channelType, active: ch.isActive }));
+  } catch { dashboard.channels = []; }
+
+  // Backup stats
+  try {
+    const { getBackupStats } = await import("./core/backup.js");
+    dashboard.backups = getBackupStats();
+  } catch { dashboard.backups = null; }
+
+  // Brain metrics (last 24h)
+  try {
+    const { getRawDb: getDb } = await import("./db/index.js");
+    const db = getDb();
+    const metrics = db.prepare(`
+      SELECT brain, COUNT(*) as count FROM soul_brain_metrics
+      WHERE created_at > datetime('now', '-24 hours') GROUP BY brain
+    `).all() as any[];
+    dashboard.brainMetrics24h = metrics.reduce((acc: any, m: any) => { acc[m.brain] = m.count; return acc; }, {});
+  } catch { dashboard.brainMetrics24h = {}; }
+
+  // Tool usage (last 24h)
+  try {
+    const tools = getRegisteredTools();
+    dashboard.tools = { internal: tools.length };
+  } catch { dashboard.tools = { internal: 0 }; }
+
+  // Self-diagnostic (cached — don't run full diag on every request)
+  try {
+    const { runSelfDiagnostics } = await import("./core/self-healing.js");
+    const diag = await runSelfDiagnostics();
+    dashboard.diagnostics = {
+      status: diag.overallStatus,
+      checks: diag.diagnostics.length,
+      ok: diag.diagnostics.filter(d => d.status === "ok").length,
+      warnings: diag.diagnostics.filter(d => d.status === "warning").length,
+      critical: diag.diagnostics.filter(d => d.status === "critical").length,
+    };
+  } catch { dashboard.diagnostics = null; }
+
+  return c.json(dashboard);
+});
+
+// ─── Backup API ───
+app.get("/api/backups", async (c) => {
+  try {
+    const { listBackups, getBackupStats } = await import("./core/backup.js");
+    return c.json({ ...getBackupStats(), backups: listBackups() });
+  } catch (e: any) { return c.json({ error: e.message }, 500); }
+});
+
+app.post("/api/backups", async (c) => {
+  try {
+    const { label } = await c.req.json().catch(() => ({ label: undefined }));
+    const { createBackup } = await import("./core/backup.js");
+    const result = createBackup(label);
+    return c.json(result, result.success ? 200 : 500);
+  } catch (e: any) { return c.json({ error: e.message }, 500); }
+});
+
+app.post("/api/backups/restore", async (c) => {
+  try {
+    const { name } = await c.req.json();
+    if (!name) return c.json({ error: "Backup name required" }, 400);
+    const { restoreBackup } = await import("./core/backup.js");
+    const result = await restoreBackup(name);
+    return c.json(result, result.success ? 200 : 500);
+  } catch (e: any) { return c.json({ error: e.message }, 500); }
+});
+
 app.get("/api/philosophy", (c) => {
   return c.json({ principles: getPhilosophy() });
 });
@@ -759,9 +856,21 @@ app.get("/api/learnings", authMiddleware(), async (c) => {
   return c.json({ count: results.length, learnings: results });
 });
 
+// Brute-force lockout tracker: IP → { failures, lockedUntil }
+const _loginLockout = new Map<string, { failures: number; lockedUntil: number }>();
+
 app.post("/api/verify", async (c) => {
-  // Rate limit: max 5 attempts per minute per IP
   const ip = c.req.header("x-forwarded-for") || c.req.header("x-real-ip") || "unknown";
+
+  // Check brute-force lockout (escalating: 5 fails = 15min, 10 = 1hr, 20 = 24hr)
+  const lockout = _loginLockout.get(ip);
+  if (lockout && Date.now() < lockout.lockedUntil) {
+    const waitSec = Math.ceil((lockout.lockedUntil - Date.now()) / 1000);
+    logSecurityEvent("verify_locked_out", { ip, failures: lockout.failures, waitSec });
+    return c.json({ error: `Account locked. Try again in ${waitSec}s.`, retryIn: waitSec }, 429);
+  }
+
+  // Rate limit: max 5 attempts per minute per IP
   const rl = checkRateLimit(`verify:${ip}`, 5, 60000);
   if (!rl.allowed) {
     logSecurityEvent("verify_rate_limited", { ip });
@@ -773,16 +882,24 @@ app.post("/api/verify", async (c) => {
   const masterInfo = verified ? await getMasterInfo() : null;
 
   if (verified && masterInfo) {
+    // Clear lockout on success
+    _loginLockout.delete(ip);
     const hash = getMasterPassphraseHash()!;
-    // Issue expiring token (24h)
     const token = createAuthToken(hash, ip);
-    // Also return legacy token for backward compat
     const legacyToken = createHash("sha256").update(hash).digest("hex");
     logSecurityEvent("verify_success", { ip });
     return c.json({ verified: true, master: masterInfo.name, token, legacyToken });
   }
 
-  logSecurityEvent("verify_failed", { ip });
+  // Track failure for brute-force lockout
+  const entry = _loginLockout.get(ip) || { failures: 0, lockedUntil: 0 };
+  entry.failures++;
+  if (entry.failures >= 20) entry.lockedUntil = Date.now() + 24 * 60 * 60 * 1000; // 24hr
+  else if (entry.failures >= 10) entry.lockedUntil = Date.now() + 60 * 60 * 1000; // 1hr
+  else if (entry.failures >= 5) entry.lockedUntil = Date.now() + 15 * 60 * 1000; // 15min
+  _loginLockout.set(ip, entry);
+
+  logSecurityEvent("verify_failed", { ip, failures: entry.failures });
   return c.json({ verified: false }, 401);
 });
 
@@ -1187,6 +1304,26 @@ async function main() {
         const result = syncWorkspaceFiles();
         console.log(`  📁 Workspace: ${result.files.length} files synced`);
       } catch (e: any) { console.log(`  Workspace sync skipped: ${e.message}`); }
+    }).catch(() => {});
+
+    // Auto-backup on startup (non-blocking)
+    import("./core/backup.js").then(({ createBackup, getBackupStats }) => {
+      try {
+        const stats = getBackupStats();
+        // Only backup if last backup is >12h old or none exists
+        const shouldBackup = !stats.latestBackup || (() => {
+          try {
+            const ts = stats.latestBackup!.replace("soul-backup-", "").replace(".db", "").replace(/_/g, "T").replace(/-/g, (m, i) => i > 9 ? ":" : "-");
+            return (Date.now() - new Date(ts).getTime()) > 12 * 60 * 60 * 1000;
+          } catch { return true; }
+        })();
+        if (shouldBackup) {
+          const result = createBackup("auto");
+          if (result.success) console.log(`  💾 Backup: ${result.message}`);
+        } else {
+          console.log(`  💾 Backup: ${stats.totalBackups} backups (${stats.totalSizeMB} MB), latest: ${stats.latestBackup}`);
+        }
+      } catch (e: any) { console.log(`  Backup skipped: ${e.message}`); }
     }).catch(() => {});
 
     // Register auto-start on Windows (non-blocking, idempotent)

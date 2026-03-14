@@ -142,6 +142,13 @@
         <div class="card stat-card"><div class="icon">&#128187;</div><h3>Code</h3><div class="value" id="statCode">-</div></div>
         <div class="card stat-card"><div class="icon">&#128737;</div><h3>Safety</h3><div class="value" id="statSafety">-</div></div>
       </div>
+      <div class="grid grid-4" style="margin-bottom:16px">
+        <div class="card stat-card"><div class="icon">&#129302;</div><h3>LLM</h3><div class="value" id="statLLM">-</div></div>
+        <div class="card stat-card"><div class="icon">&#129516;</div><h3>Embeddings</h3><div class="value" id="statEmbeddings">-</div></div>
+        <div class="card stat-card"><div class="icon">&#128268;</div><h3>Channels</h3><div class="value" id="statChannels">-</div></div>
+        <div class="card stat-card"><div class="icon">&#128190;</div><h3>Backups</h3><div class="value" id="statBackups">-</div></div>
+      </div>
+      <div id="diagnosticsBanner" style="display:none;margin-bottom:16px;padding:12px 16px;border-radius:8px;font-size:13px;"></div>
       <div class="grid grid-2">
         <div class="card">
           <h3>Recent Memories</h3>
@@ -282,6 +289,25 @@
         document.getElementById('statCode').textContent = (dash.code?.snippets ?? 0) + (dash.code?.templates ?? 0) + (dash.code?.patterns ?? 0);
         document.getElementById('statSafety').textContent = dash.safety?.checks ?? 0;
         document.getElementById('statusText').textContent = dash.soul?.master ? 'Bound to ' + dash.soul.master : 'Awaiting Master';
+        // v2.0 monitoring stats
+        document.getElementById('statLLM').textContent = dash.llm?.default || 'None';
+        const emb = dash.embeddings;
+        document.getElementById('statEmbeddings').textContent = emb ? `${emb.coverage}%` : 'Off';
+        document.getElementById('statChannels').textContent = dash.channels?.length ?? 0;
+        document.getElementById('statBackups').textContent = dash.backups?.totalBackups ?? 0;
+        // Diagnostics banner
+        const diagBanner = document.getElementById('diagnosticsBanner');
+        if (dash.diagnostics) {
+          const d = dash.diagnostics;
+          const colors = { healthy: '#22c55e', degraded: '#f59e0b', critical: '#ef4444' };
+          diagBanner.style.display = 'block';
+          diagBanner.style.background = colors[d.status] + '22';
+          diagBanner.style.border = '1px solid ' + colors[d.status] + '55';
+          diagBanner.style.color = colors[d.status];
+          const icons = { healthy: '&#9989;', degraded: '&#9888;&#65039;', critical: '&#10060;' };
+          diagBanner.innerHTML = `${icons[d.status]} System: <b>${d.status.toUpperCase()}</b> — ${d.ok}/${d.checks} checks passed` +
+            (d.warnings > 0 ? `, ${d.warnings} warnings` : '') + (d.critical > 0 ? `, ${d.critical} critical` : '');
+        }
       }
 
       const rEl = document.getElementById('recentMemories');
