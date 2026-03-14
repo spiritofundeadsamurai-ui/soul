@@ -60,7 +60,7 @@ const CATEGORY_KEYWORDS: Record<string, string[]> = {
   emotional: ["mood", "emotion", "feeling", "stress", "happy", "sad", "อารมณ์", "ความรู้สึก", "เครียด"],
   code: ["code", "snippet", "template", "pattern", "stack", "programming", "โค้ด", "โปรแกรม", "เขียนไฟล์", "write file", "edit file", "แก้ไฟล์", "สร้างไฟล์", "create file", "run", "execute", "รันคำสั่ง", "npm", "pip", "git", "commit", "push", "สร้างโปรเจค", "scaffold", "project", "test", "lint"],
   tasks: ["task", "remind", "todo", "assign", "work", "deadline", "งาน", "เตือน", "มอบหมาย"],
-  research: ["research", "investigate", "deep dive", "study", "source", "วิจัย", "ศึกษา"],
+  research: ["research", "investigate", "deep dive", "study", "source", "วิจัย", "ศึกษา", "youtube", "video", "วิดีโอ", "ยูทูป", "ดูคลิป", "เรียนจากวิดีโอ", "learn from video", "transcript"],
   people: ["person", "people", "who", "relationship", "contact", "คน", "ใคร", "ความสัมพันธ์"],
   time: ["time", "timer", "track", "productivity", "hours", "เวลา", "จับเวลา"],
   family: ["spawn", "soul", "child", "team", "fuse", "evolve", "ลูก", "ทีม"],
@@ -2493,6 +2493,35 @@ export function registerAllInternalTools() {
 
   // ── Native App ──
   registerNativeAppTools_();
+
+  // ── Video Learner ──
+  registerInternalTool({
+    name: "soul_learn_video",
+    description: "Learn from a YouTube video — extract transcript, summarize key points, remember everything.",
+    category: "research",
+    parameters: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "YouTube video URL" },
+      },
+      required: ["url"],
+    },
+    execute: async (args) => {
+      const { learnFromYouTube } = await import("./video-learner.js");
+      const r = await learnFromYouTube(args.url);
+      if (!r.success) return r.message;
+      let reply = `📺 ${r.title} (${r.channel})\n\n`;
+      if (r.hasTranscript) {
+        reply += r.summary + "\n";
+        if (r.keyPoints.length > 0) {
+          reply += "\nKey Points:\n" + r.keyPoints.map(p => `• ${p}`).join("\n");
+        }
+      } else {
+        reply += "ไม่มี subtitle — จำชื่อวิดีโอไว้แล้ว";
+      }
+      return reply;
+    },
+  });
 
   // ── Code Runner ──
   registerCodeRunnerTools_();
