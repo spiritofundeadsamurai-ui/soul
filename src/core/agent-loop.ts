@@ -58,7 +58,7 @@ const CATEGORY_KEYWORDS: Record<string, string[]> = {
   life: ["goal", "habit", "reflect", "motivate", "advice", "life", "เป้าหมาย", "นิสัย", "ชีวิต", "แนะนำ"],
   creative: ["write", "story", "poem", "teach", "empathy", "communicate", "เขียน", "สอน", "สื่อสาร"],
   emotional: ["mood", "emotion", "feeling", "stress", "happy", "sad", "อารมณ์", "ความรู้สึก", "เครียด"],
-  code: ["code", "snippet", "template", "pattern", "stack", "programming", "โค้ด", "โปรแกรม"],
+  code: ["code", "snippet", "template", "pattern", "stack", "programming", "โค้ด", "โปรแกรม", "เขียนไฟล์", "write file", "edit file", "แก้ไฟล์", "สร้างไฟล์", "create file", "run", "execute", "รันคำสั่ง", "npm", "pip", "git", "commit", "push", "สร้างโปรเจค", "scaffold", "project", "test", "lint"],
   tasks: ["task", "remind", "todo", "assign", "work", "deadline", "งาน", "เตือน", "มอบหมาย"],
   research: ["research", "investigate", "deep dive", "study", "source", "วิจัย", "ศึกษา"],
   people: ["person", "people", "who", "relationship", "contact", "คน", "ใคร", "ความสัมพันธ์"],
@@ -2493,6 +2493,9 @@ export function registerAllInternalTools() {
 
   // ── Native App ──
   registerNativeAppTools_();
+
+  // ── Code Runner ──
+  registerCodeRunnerTools_();
 
   // ── Database & API ──
   registerDataConnectorTools_();
@@ -6905,6 +6908,111 @@ function registerDataTools_() {
       const hooks = listWebhooks();
       if (hooks.length === 0) return "No webhooks configured. Use soul_webhook_add to set one up.";
       return hooks.map(h => `${h.isActive ? "✅" : "❌"} ${h.name}: ${h.url} (events: ${h.events})${h.failCount > 0 ? ` ⚠️ ${h.failCount} failures` : ""}`).join("\n");
+    },
+  });
+}
+
+// ─── Code Runner Tools ───
+
+function registerCodeRunnerTools_() {
+  registerInternalTool({
+    name: "soul_write_file",
+    description: "Write content to a file. Creates the file if it doesn't exist, overwrites if it does.",
+    category: "code",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "File path" },
+        content: { type: "string", description: "File content" },
+      },
+      required: ["path", "content"],
+    },
+    execute: async (args) => {
+      const { writeFile } = await import("./code-runner.js");
+      return writeFile(args.path, args.content).message;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_edit_file",
+    description: "Edit a file by replacing specific text. Find and replace.",
+    category: "code",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "File path" },
+        search: { type: "string", description: "Text to find" },
+        replace: { type: "string", description: "Text to replace with" },
+      },
+      required: ["path", "search", "replace"],
+    },
+    execute: async (args) => {
+      const { editFile } = await import("./code-runner.js");
+      return editFile(args.path, args.search, args.replace).message;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_run_command",
+    description: "Run a shell command (npm, python, node, git, etc.). Dangerous commands are blocked.",
+    category: "code",
+    parameters: {
+      type: "object",
+      properties: {
+        command: { type: "string", description: "Shell command to run" },
+        cwd: { type: "string", description: "Working directory (optional)" },
+      },
+      required: ["command"],
+    },
+    execute: async (args) => {
+      const { runCommand } = await import("./code-runner.js");
+      const r = runCommand(args.command, { cwd: args.cwd });
+      return r.success ? r.output : `Error: ${r.message}\n${r.output}`;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_git",
+    description: "Git operations: status, diff, log, commit, push.",
+    category: "code",
+    parameters: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["status", "diff", "log", "commit", "push"], description: "Git action" },
+        message: { type: "string", description: "Commit message (for commit action)" },
+        cwd: { type: "string", description: "Repository directory" },
+      },
+      required: ["action"],
+    },
+    execute: async (args) => {
+      const git = await import("./code-runner.js");
+      switch (args.action) {
+        case "status": return git.gitStatus(args.cwd);
+        case "diff": return git.gitDiff(args.cwd);
+        case "log": return git.gitLog(10, args.cwd);
+        case "commit": return git.gitCommit(args.message || "Soul auto-commit", args.cwd).message;
+        case "push": return git.gitPush(args.cwd).message;
+        default: return `Unknown action: ${args.action}`;
+      }
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_create_project",
+    description: "Create a new project from template. Templates: node, python, react, nextjs, html.",
+    category: "code",
+    parameters: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Project name" },
+        template: { type: "string", enum: ["node", "python", "react", "nextjs", "html"], description: "Project template" },
+        path: { type: "string", description: "Output directory (optional)" },
+      },
+      required: ["name", "template"],
+    },
+    execute: async (args) => {
+      const { scaffoldProject } = await import("./code-runner.js");
+      return scaffoldProject(args.name, args.template, args.path).message;
     },
   });
 }
