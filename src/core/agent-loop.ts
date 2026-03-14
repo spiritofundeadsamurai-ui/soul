@@ -2544,6 +2544,42 @@ export function registerAllInternalTools() {
     },
   });
 
+  registerInternalTool({
+    name: "soul_scan_markets",
+    description: "Scan multiple trading symbols for signals at once. Categories: forex, metals, crypto, indices, energy. Or specify symbols directly.",
+    category: "mt5",
+    parameters: {
+      type: "object",
+      properties: {
+        categories: { type: "string", description: "Comma-separated: forex,metals,crypto,indices,energy (default: metals,forex)" },
+        symbols: { type: "string", description: "Or specific symbols: EURUSD,GBPUSD,BTCUSD" },
+      },
+    },
+    execute: async (args) => {
+      const { autoScanAndAlert, scanMultipleSymbols } = await import("./trading-signal.js");
+      if (args.symbols) {
+        const syms = args.symbols.split(",").map((s: string) => s.trim().toUpperCase());
+        const result = await scanMultipleSymbols(syms);
+        return result.summary;
+      }
+      const cats = args.categories ? args.categories.split(",").map((c: string) => c.trim()) : ["metals", "forex"];
+      return autoScanAndAlert(cats);
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_list_symbols",
+    description: "List all available trading symbols by category (forex, metals, crypto, indices, energy).",
+    category: "mt5",
+    parameters: { type: "object", properties: {} },
+    execute: async () => {
+      const { POPULAR_SYMBOLS } = await import("./trading-signal.js");
+      return Object.entries(POPULAR_SYMBOLS).map(([cat, syms]) =>
+        `${cat.toUpperCase()}: ${(syms as string[]).join(", ")}`
+      ).join("\n");
+    },
+  });
+
   // ── Video Learner ──
   registerInternalTool({
     name: "soul_learn_video",

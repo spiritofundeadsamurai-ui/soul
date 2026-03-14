@@ -280,6 +280,97 @@ export async function autoSignalAlert(symbol: string = "XAUUSD"): Promise<string
   return alertMsg;
 }
 
+// ─── Popular Symbols ───
+
+export const POPULAR_SYMBOLS: Record<string, string[]> = {
+  forex: ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCHF", "NZDUSD", "USDCAD", "EURGBP", "EURJPY", "GBPJPY"],
+  metals: ["XAUUSD", "XAGUSD", "XPTUSD"],
+  crypto: ["BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD"],
+  indices: ["US30", "US500", "NAS100", "GER40", "JPN225"],
+  energy: ["USOIL", "UKOIL", "NGAS"],
+};
+
+export function getAllSymbols(): string[] {
+  return Object.values(POPULAR_SYMBOLS).flat();
+}
+
+/**
+ * Scan multiple symbols for signals at once
+ */
+export async function scanMultipleSymbols(symbols?: string[]): Promise<{
+  signals: TradingSignal[];
+  validated: TradingSignal[];
+  summary: string;
+}> {
+  const toScan = symbols || ["XAUUSD", "EURUSD", "GBPUSD", "USDJPY", "BTCUSD"];
+  const signals: TradingSignal[] = [];
+  const validated: TradingSignal[] = [];
+
+  for (const symbol of toScan) {
+    try {
+      const signal = await detectSignals(symbol);
+      signals.push(signal);
+      if (signal.validated) {
+        validated.push(signal);
+        recordSignal(signal);
+      }
+    } catch { /* skip failed symbols */ }
+    // Small delay between symbols to avoid rate limits
+    await new Promise(r => setTimeout(r, 1000));
+  }
+
+  // Build summary
+  const lines: string[] = [];
+  lines.push(`📊 Scan ${toScan.length} symbols — ${validated.length} validated signals\n`);
+
+  for (const s of signals) {
+    const icon = s.direction === "BUY" ? "🟢" : s.direction === "SELL" ? "🔴" : "⚪";
+    const valid = s.validated ? "✅" : "—";
+    lines.push(`${icon} ${s.symbol.padEnd(8)} ${s.direction.padEnd(7)} ${s.confidence}% ${valid} ${s.reasons[0] || ""}`);
+  }
+
+  if (validated.length > 0) {
+    lines.push("\n🚨 Validated Signals:");
+    for (const v of validated) {
+      lines.push(`  ${v.direction} ${v.symbol} @ $${v.price.toFixed(2)} (${v.confidence}%)`);
+      v.reasons.forEach(r => lines.push(`    • ${r}`));
+    }
+  }
+
+  return { signals, validated, summary: lines.join("\n") };
+}
+
+/**
+ * Auto-scan + alert: detect signals across all popular symbols and alert validated ones
+ */
+export async function autoScanAndAlert(categories?: string[]): Promise<string> {
+  const cats = categories || ["metals", "forex"];
+  const symbols = cats.flatMap(c => POPULAR_SYMBOLS[c] || []);
+  if (symbols.length === 0) return "No symbols found for categories: " + cats.join(", ");
+
+  const { signals, validated, summary } = await scanMultipleSymbols(symbols);
+
+  // Send validated signals to Telegram
+  if (validated.length > 0) {
+    try {
+      const alertMsg = `🚨 Soul Trading Scan\n\n${validated.map(v =>
+        `${v.direction === "BUY" ? "🟢" : "🔴"} ${v.direction} ${v.symbol} @ $${v.price.toFixed(2)} (${v.confidence}%)\n${v.reasons.map(r => `  • ${r}`).join("\n")}`
+      ).join("\n\n")}\n\n⚠️ ไม่ใช่คำแนะนำการลงทุน`;
+
+      const { sendMessage, listChannels } = await import("./channels.js");
+      const channels = await listChannels();
+      for (const ch of channels) {
+        if (ch.channelType === "telegram" && ch.isActive) {
+          await sendMessage(ch.name, alertMsg);
+          break;
+        }
+      }
+    } catch { /* telegram failed */ }
+  }
+
+  return summary;
+}
+
 // ─── Table ───
 
 let _journalReady = false;
