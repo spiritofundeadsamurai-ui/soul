@@ -1382,70 +1382,65 @@ async function main() {
   `);
 
   // HTTPS support: set SOUL_HTTPS=1 and optionally SOUL_CERT/SOUL_KEY paths
-  let serverOptions: any = { fetch: app.fetch, port: PORT };
   const useHttps = process.env.SOUL_HTTPS === "1";
+  let httpServer: any;
+
   if (useHttps) {
     try {
       const { readFileSync, existsSync: fsExists, writeFileSync: fsWrite, mkdirSync: fsMkdir } = await import("fs");
       const { join: pJoin } = await import("path");
       const { homedir: hDir } = await import("os");
+      const https = await import("https");
 
       const certDir = pJoin(hDir(), ".soul", "certs");
       const certPath = process.env.SOUL_CERT || pJoin(certDir, "soul.crt");
       const keyPath = process.env.SOUL_KEY || pJoin(certDir, "soul.key");
 
       if (!fsExists(certPath) || !fsExists(keyPath)) {
-        // Auto-generate self-signed cert using Node.js crypto (no openssl CLI needed)
         fsMkdir(certDir, { recursive: true });
         const crypto = await import("crypto");
-        const { privateKey, publicKey } = crypto.generateKeyPairSync("rsa", {
+        const { privateKey } = crypto.generateKeyPairSync("rsa", {
           modulusLength: 2048,
           publicKeyEncoding: { type: "spki", format: "pem" },
           privateKeyEncoding: { type: "pkcs8", format: "pem" },
         });
-        // Self-signed certificate using Node.js built-in (available since Node 15+)
-        const { X509Certificate } = crypto;
-        try {
-          // Try openssl first (works on Linux/macOS)
-          const { execSync } = await import("child_process");
-          execSync(`openssl req -x509 -newkey rsa:2048 -keyout "${keyPath}" -out "${certPath}" -days 365 -nodes -subj "/CN=Soul AI"`, { timeout: 10000, stdio: "pipe" });
-        } catch {
-          // Fallback: write key and create a minimal self-signed cert via openssl with fixed config
-          fsWrite(pJoin(certDir, "soul.key"), privateKey);
-          try {
-            const { execSync } = await import("child_process");
-            // Use inline config to avoid openssl.cnf issues on Windows
-            const conf = pJoin(certDir, "openssl.cnf");
-            fsWrite(conf, "[req]\ndistinguished_name=dn\nprompt=no\n[dn]\nCN=Soul AI\n");
-            execSync(`openssl req -x509 -key "${keyPath}" -out "${certPath}" -days 365 -config "${conf}"`, { timeout: 10000, stdio: "pipe" });
-          } catch {
-            // Last resort: use Node's TLS with just the key (will generate warning but works)
-            // Create a minimal DER self-signed cert
-            console.log("  ⚠️ Could not generate TLS cert. Install OpenSSL or provide SOUL_CERT/SOUL_KEY.");
-            throw new Error("Cannot generate self-signed certificate");
-          }
-        }
+        fsWrite(keyPath, privateKey);
+        // Generate cert using openssl with inline config (avoids Windows openssl.cnf issue)
+        const { execSync } = await import("child_process");
+        const conf = pJoin(certDir, "openssl.cnf");
+        fsWrite(conf, "[req]\ndistinguished_name=dn\nprompt=no\n[dn]\nCN=Soul AI\n");
+        execSync(`openssl req -x509 -key "${keyPath}" -out "${certPath}" -days 365 -config "${conf}"`, { timeout: 10000, stdio: "pipe" });
         console.log("  🔒 Generated self-signed TLS certificate");
       }
 
-      serverOptions = {
-        ...serverOptions,
-        createServer: (await import("https")).createServer,
-        serverOptions: {
-          cert: readFileSync(certPath),
-          key: readFileSync(keyPath),
-        },
-      };
-      console.log("  🔒 HTTPS enabled");
+      // Create HTTPS server manually with Hono's fetch handler
+      const { getRequestListener } = await import("@hono/node-server");
+      const listener = getRequestListener(app.fetch);
+      const tlsServer = https.createServer(
+        { cert: readFileSync(certPath), key: readFileSync(keyPath) },
+        listener,
+      );
+      tlsServer.listen(PORT, () => {
+        console.log("  🔒 HTTPS enabled");
+        console.log(`  Soul HTTPS API: https://localhost:${PORT}/api/health`);
+        console.log(`  Soul WebSocket: wss://localhost:${PORT}/ws`);
+      });
+      httpServer = tlsServer;
     } catch (e: any) {
-      console.log(`  ⚠️ HTTPS setup failed (falling back to HTTP): ${e.message}`);
+      console.log(`  ⚠️ HTTPS failed (${e.message}) — falling back to HTTP`);
+      httpServer = null;
     }
   }
 
-  const httpServer = serve(serverOptions, async (info) => {
-    const proto = useHttps ? "https" : "http";
-    console.log(`  Soul ${proto.toUpperCase()} API: ${proto}://localhost:${info.port}/api/health`);
-    console.log(`  Soul WebSocket: ws${useHttps ? "s" : ""}://localhost:${info.port}/ws`);
+  if (!httpServer) {
+    httpServer = serve({ fetch: app.fetch, port: PORT }, (info) => {
+      console.log(`  Soul HTTP API: http://localhost:${info.port}/api/health`);
+      console.log(`  Soul WebSocket: ws://localhost:${info.port}/ws`);
+    });
+  }
+
+  // Post-startup tasks (run regardless of HTTP/HTTPS)
+  {
     startScheduler();
 
     // Initialize vector embeddings (non-blocking)
@@ -1544,7 +1539,7 @@ async function main() {
         }
       }
     } catch (e: any) { console.error("  Telegram auto-start failed:", e.message); }
-  });
+  }
 
   // Initialize WebSocket on the raw HTTP server
   initWebSocket(httpServer);
