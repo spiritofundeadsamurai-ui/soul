@@ -2380,6 +2380,9 @@ export function registerAllInternalTools() {
   // ── Native App ──
   registerNativeAppTools_();
 
+  // ── Proactive Soul ──
+  registerProactiveTools_();
+
   // ── Data Management ──
   registerDataTools_();
 
@@ -5853,6 +5856,48 @@ function registerProactiveTools_() {
       return formatInsights(insights);
     },
   });
+
+  registerInternalTool({
+    name: "soul_morning_briefing",
+    description: "Send morning briefing to Telegram NOW — gold price, tasks, goals, mood, reminders.",
+    category: "notification",
+    parameters: { type: "object", properties: {} },
+    execute: async () => {
+      const { sendMorningBriefing } = await import("./proactive-soul.js");
+      const result = await sendMorningBriefing();
+      return result.message;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_briefing_schedule",
+    description: "Set what time Soul sends morning briefing via Telegram. Default: 7:00 AM.",
+    category: "notification",
+    parameters: {
+      type: "object",
+      properties: {
+        hour: { type: "number", description: "Hour (0-23)" },
+        minute: { type: "number", description: "Minute (0-59)" },
+      },
+      required: ["hour"],
+    },
+    execute: async (args) => {
+      const { registerMorningBriefingJob } = await import("./proactive-soul.js");
+      return registerMorningBriefingJob(args.hour, args.minute || 0);
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_check_in",
+    description: "Check if master has been quiet and generate a check-in message.",
+    category: "notification",
+    parameters: { type: "object", properties: {} },
+    execute: async () => {
+      const { checkInOnMaster } = await import("./proactive-soul.js");
+      const msg = await checkInOnMaster();
+      return msg || "Master ยังคุยกันอยู่เรื่อยๆ ไม่ต้อง check in ครับ";
+    },
+  });
 }
 
 function registerQualityTools_() {
@@ -6694,3 +6739,4 @@ function registerDataTools_() {
     },
   });
 }
+

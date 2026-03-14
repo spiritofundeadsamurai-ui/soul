@@ -1443,6 +1443,14 @@ async function main() {
   {
     startScheduler();
 
+    // Register morning briefing job (idempotent — skips if already exists)
+    import("./core/proactive-soul.js").then(({ registerMorningBriefingJob }) => {
+      try {
+        const msg = registerMorningBriefingJob(7, 0); // 7:00 AM
+        if (msg.includes("registered!")) console.log(`  🌅 ${msg}`);
+      } catch { /* ok */ }
+    }).catch(() => {});
+
     // Initialize vector embeddings (non-blocking)
     import("./memory/embeddings.js").then(async ({ initEmbeddingProvider, startEmbeddingBuilder, getEmbeddingStats }) => {
       try {

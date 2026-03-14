@@ -451,7 +451,15 @@ async function executeJob(job: ScheduledJob): Promise<void> {
         } catch { /* self-diagnostic failure is non-critical */ }
         break;
       case "briefing":
-        output = await generateBriefing();
+        // Use proactive morning briefing — sends to Telegram automatically
+        try {
+          const { sendMorningBriefing } = await import("./proactive-soul.js");
+          const briefResult = await sendMorningBriefing();
+          output = briefResult.message;
+        } catch (briefErr: any) {
+          // Fallback to old briefing
+          output = await generateBriefing();
+        }
         break;
       case "memory":
         output = await consolidateMemories();
