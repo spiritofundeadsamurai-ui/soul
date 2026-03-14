@@ -4955,7 +4955,17 @@ function registerCoworkerTools_() {
         description: args.description || "",
         priority: args.priority || "normal",
       });
-      return `Work assigned to ${args.childName}: "${args.title}" [${args.priority || "normal"}]`;
+      // Run the child agent immediately and return result
+      try {
+        const { runSystem2Loop } = await import("./agent-loop.js");
+        const childResult = await runSystem2Loop(args.description || args.title, {
+          childName: args.childName,
+          maxIterations: 3,
+        });
+        return `[${args.childName}] งานเสร็จแล้ว:\n${childResult.reply}`;
+      } catch {
+        return `Work assigned to ${args.childName}: "${args.title}" — รอดำเนินการ`;
+      }
     },
   });
 
