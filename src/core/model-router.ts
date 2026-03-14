@@ -148,10 +148,10 @@ export function buildCascade(): { simple: CascadeTier; medium: CascadeTier; comp
     "gemini:gemini-2.5-pro": 92,
     "openai:gpt-4o": 88,
     "deepseek:deepseek-reasoner": 87,
-    "groq:moonshotai/kimi-k2-instruct": 85, // 4/4 tool calling, best free model
+    "gemini:gemini-2.5-flash": 86,           // Good tool calling + 1M tok/day free (best value)
+    "groq:moonshotai/kimi-k2-instruct": 84, // Good tool calling but 10K tok/min limit
     "deepseek:deepseek-chat": 82,
     "openai:gpt-4o-mini": 80,               // 4/4 tool calling, reliable paid
-    "gemini:gemini-2.5-flash": 78,
     "groq:qwen/qwen3-32b": 76,              // 3/4 tool calling, has errors
     "groq:llama-3.3-70b-versatile": 74,     // 2/4 tool calling, format bugs
   };

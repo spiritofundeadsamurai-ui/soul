@@ -2063,6 +2063,27 @@ export async function runSystem2Loop(
         }
         break; // success
       } catch (llmErr: any) {
+        // Rate limit (429) → switch to a different provider
+        if (/429|rate.limit|too many/i.test(llmErr.message)) {
+          console.log(`[Agent] Rate limit hit on ${options?.providerId}/${options?.modelId} — trying fallback`);
+          try {
+            const { buildCascade } = await import("./model-router.js");
+            const cascade = buildCascade();
+            if (cascade) {
+              // Try different tiers
+              const fallbacks = [cascade.medium, cascade.simple, cascade.complex];
+              for (const fb of fallbacks) {
+                if (fb.providerId !== options?.providerId || fb.modelId !== options?.modelId) {
+                  options = { ...options, providerId: fb.providerId, modelId: fb.modelId };
+                  console.log(`[Agent] Switching to ${fb.label}`);
+                  break;
+                }
+              }
+            }
+          } catch { /* ok */ }
+          await new Promise(r => setTimeout(r, 2000));
+          continue;
+        }
         if (retry < MAX_LLM_RETRIES && /timeout|ECONNRESET|ECONNREFUSED|fetch failed|network/i.test(llmErr.message)) {
           await new Promise(r => setTimeout(r, 1000 * (retry + 1))); // backoff
           continue;
