@@ -2545,6 +2545,21 @@ export function registerAllInternalTools() {
   });
 
   registerInternalTool({
+    name: "soul_trading_team",
+    description: "Run full 9-agent trading team analysis: 4 analysts + bull/bear debate + trader + risk manager + portfolio manager. Deep analysis ~30s.",
+    category: "mt5",
+    parameters: {
+      type: "object",
+      properties: { symbol: { type: "string", description: "Trading symbol (default: XAUUSD)" } },
+    },
+    execute: async (args) => {
+      const { runTradingTeam } = await import("./trading-agents.js");
+      const result = await runTradingTeam(args.symbol || "XAUUSD");
+      return result.summary;
+    },
+  });
+
+  registerInternalTool({
     name: "soul_scan_markets",
     description: "Scan multiple trading symbols for signals at once. Categories: forex, metals, crypto, indices, energy. Or specify symbols directly.",
     category: "mt5",
