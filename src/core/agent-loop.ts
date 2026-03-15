@@ -2602,6 +2602,62 @@ export function registerAllInternalTools() {
     },
   });
 
+  // ── Session Learning ──
+  registerInternalTool({
+    name: "soul_learn_session",
+    description: "Learn lessons from a coding session. Give a project name + git log or summary. Soul extracts WISDOM, not logs.",
+    category: "meta",
+    parameters: {
+      type: "object",
+      properties: {
+        project: { type: "string", description: "Project name (e.g. soul, nexatrade)" },
+        summary: { type: "string", description: "What was done and what was learned (1-3 sentences)" },
+      },
+      required: ["project", "summary"],
+    },
+    execute: async (args) => {
+      const { learnFromSession } = await import("./session-learner.js");
+      const r = await learnFromSession({ project: args.project, summary: args.summary });
+      return r.message;
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_lesson",
+    description: "Teach Soul a quick lesson — what you learned, what to avoid, what works well.",
+    category: "meta",
+    parameters: {
+      type: "object",
+      properties: {
+        lesson: { type: "string", description: "The lesson learned" },
+        project: { type: "string", description: "Related project (optional)" },
+      },
+      required: ["lesson"],
+    },
+    execute: async (args) => {
+      const { quickLesson } = await import("./session-learner.js");
+      return quickLesson(args.lesson, args.project);
+    },
+  });
+
+  registerInternalTool({
+    name: "soul_lessons",
+    description: "View all lessons Soul has learned, optionally filtered by project.",
+    category: "meta",
+    parameters: {
+      type: "object",
+      properties: {
+        project: { type: "string", description: "Filter by project name (optional)" },
+      },
+    },
+    execute: async (args) => {
+      const { getLessons } = await import("./session-learner.js");
+      const lessons = getLessons(args.project);
+      if (lessons.length === 0) return "ยังไม่มีบทเรียน ใช้ soul_lesson เพื่อสอน Soul";
+      return lessons.map((l, i) => `${i + 1}. ${l.content}`).join("\n");
+    },
+  });
+
   // ── Evolution ──
   registerInternalTool({
     name: "soul_evolve",
