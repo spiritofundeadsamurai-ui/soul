@@ -310,62 +310,83 @@ setInterval(() => {
   }
 }, 60000);
 
-// ─── 7. Token Management — Expiring auth tokens ───
+// ─── 7. Token Management — Persistent tokens (survive server restart) ───
 
-interface TokenEntry {
-  hash: string;
-  createdAt: number;
-  expiresAt: number;
-  ip?: string;
+import { getRawDb } from "../db/index.js";
+
+const TOKEN_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000; // 7 days (was 24h — too short)
+
+let _tokenTableReady = false;
+function ensureTokenTable() {
+  if (_tokenTableReady) return;
+  try {
+    const db = getRawDb();
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS soul_auth_tokens (
+        token TEXT PRIMARY KEY,
+        hash TEXT NOT NULL,
+        ip TEXT,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL
+      )
+    `);
+    _tokenTableReady = true;
+  } catch { /* DB not ready yet */ }
 }
-
-const activeTokens = new Map<string, TokenEntry>();
-const TOKEN_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 export function createAuthToken(passphraseHash: string, ip?: string): string {
   const randomPart = randomBytes(32).toString("hex");
   const token = createHash("sha256").update(passphraseHash + randomPart + Date.now()).digest("hex");
 
-  activeTokens.set(token, {
-    hash: passphraseHash,
-    createdAt: Date.now(),
-    expiresAt: Date.now() + TOKEN_EXPIRY_MS,
-    ip,
-  });
+  try {
+    ensureTokenTable();
+    const db = getRawDb();
+    db.prepare("INSERT OR REPLACE INTO soul_auth_tokens (token, hash, ip, created_at, expires_at) VALUES (?, ?, ?, ?, ?)")
+      .run(token, passphraseHash, ip || null, Date.now(), Date.now() + TOKEN_EXPIRY_MS);
+  } catch { /* fallback: token works for this session only */ }
 
   return token;
 }
 
 export function validateAuthToken(token: string): boolean {
-  const entry = activeTokens.get(token);
-  if (!entry) {
-    // Backward compat: also accept legacy static token
+  try {
+    ensureTokenTable();
+    const db = getRawDb();
+    const row = db.prepare("SELECT expires_at FROM soul_auth_tokens WHERE token = ?").get(token) as any;
+    if (!row) {
+      // Backward compat: accept legacy static token (hash of passphrase)
+      try {
+        const { getMasterPassphraseHash } = require("./master.js");
+        const hash = getMasterPassphraseHash();
+        if (hash) {
+          const legacyToken = createHash("sha256").update(hash).digest("hex");
+          if (token === legacyToken) return true;
+        }
+      } catch { /* ok */ }
+      return false;
+    }
+    if (Date.now() >= row.expires_at) {
+      db.prepare("DELETE FROM soul_auth_tokens WHERE token = ?").run(token);
+      return false;
+    }
+    return true;
+  } catch {
     return false;
   }
-
-  if (Date.now() >= entry.expiresAt) {
-    activeTokens.delete(token);
-    return false;
-  }
-
-  return true;
 }
 
 export function revokeAuthToken(token: string): void {
-  activeTokens.delete(token);
+  try { ensureTokenTable(); getRawDb().prepare("DELETE FROM soul_auth_tokens WHERE token = ?").run(token); } catch {}
 }
 
 export function revokeAllTokens(): void {
-  activeTokens.clear();
+  try { ensureTokenTable(); getRawDb().exec("DELETE FROM soul_auth_tokens"); } catch {}
 }
 
-// Clean up expired tokens
+// Clean up expired tokens every 5 minutes
 setInterval(() => {
-  const now = Date.now();
-  for (const [token, entry] of activeTokens) {
-    if (now >= entry.expiresAt) activeTokens.delete(token);
-  }
-}, 300000); // Every 5 minutes
+  try { ensureTokenTable(); getRawDb().prepare("DELETE FROM soul_auth_tokens WHERE expires_at < ?").run(Date.now()); } catch {}
+}, 300000);
 
 // ─── 8. API Key Encryption ───
 
