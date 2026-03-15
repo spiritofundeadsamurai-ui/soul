@@ -32,6 +32,20 @@ export interface RememberInput {
 }
 
 export async function remember(input: RememberInput): Promise<MemoryEntry> {
+  // Filter out junk — don't store Claude Code session logs, agent commands, etc.
+  const junkPatterns = [
+    /session_id.*transcript_path/,
+    /permission_mode.*acceptEdits/,
+    /Agent used (Bash|Edit|Read|Write|Grep|Glob)/,
+    /\{\"command\":/,
+    /\{\"file_path\":/,
+    /\{\"pattern\":/,
+  ];
+  if (junkPatterns.some(p => p.test(input.content))) {
+    // Return a fake entry without actually storing
+    return { id: -1, type: input.type, content: input.content, tags: "[]", source: input.source || null, context: null, supersededBy: null, isActive: true, createdAt: new Date().toISOString() } as any;
+  }
+
   const db = getDb();
 
   const result = db
