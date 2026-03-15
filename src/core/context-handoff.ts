@@ -156,10 +156,12 @@ export function importContext(packet: ContextPacket): { imported: number; detail
   const details: string[] = [];
   let imported = 0;
 
-  // Import key facts as knowledge
+  // Import key facts as knowledge (with junk filter)
+  const junkCheck = (s: string) => /session_id.*transcript|permission_mode|acceptEdits|Agent used|\.claude.*jsonl/i.test(s);
   if (packet.keyFacts.length > 0) {
     try {
       for (const fact of packet.keyFacts.slice(0, 10)) {
+        if (junkCheck(fact)) continue;
         rawDb.prepare(`
           INSERT INTO memories (content, type, tags, source, created_at)
           VALUES (?, 'knowledge', '["context-handoff", "imported"]', ?, datetime('now'))

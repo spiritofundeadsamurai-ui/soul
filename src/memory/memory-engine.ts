@@ -31,18 +31,28 @@ export interface RememberInput {
   context?: string;
 }
 
-export async function remember(input: RememberInput): Promise<MemoryEntry> {
-  // Filter out junk — don't store Claude Code session logs, agent commands, etc.
+/**
+ * Check if content is junk (Claude Code session logs, agent commands, etc.)
+ * Used by ALL memory storage paths to prevent junk from entering the database.
+ */
+export function isJunkContent(content: string): boolean {
   const junkPatterns = [
     /session_id.*transcript_path/,
-    /permission_mode.*acceptEdits/,
-    /Agent used (Bash|Edit|Read|Write|Grep|Glob)/,
-    /\{\"command\":/,
-    /\{\"file_path\":/,
-    /\{\"pattern\":/,
+    /permission_mode/,
+    /acceptEdits/,
+    /Agent used (Bash|Edit|Read|Write|Grep|Glob|Agent)/,
+    /\{"command":/,
+    /\{"file_path":/,
+    /\{"pattern":/,
+    /claude.*projects.*jsonl/i,
+    /\\\\\.claude\\\\/,
+    /\.claude\/projects\//,
   ];
-  if (junkPatterns.some(p => p.test(input.content))) {
-    // Return a fake entry without actually storing
+  return junkPatterns.some(p => p.test(content));
+}
+
+export async function remember(input: RememberInput): Promise<MemoryEntry> {
+  if (isJunkContent(input.content)) {
     return { id: -1, type: input.type, content: input.content, tags: "[]", source: input.source || null, context: null, supersededBy: null, isActive: true, createdAt: new Date().toISOString() } as any;
   }
 

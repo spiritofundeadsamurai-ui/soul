@@ -47,6 +47,10 @@ function ensureDb(): Database.Database {
 function learn(content: string, type: string = "knowledge", tags: string[] = [], source: string = "agent") {
   if (!content || content.trim().length < 5) return;
 
+  // Junk filter — block Claude Code session logs
+  const junkPatterns = [/session_id.*transcript_path/, /permission_mode/, /acceptEdits/, /Agent used (Bash|Edit|Read|Write|Grep)/, /\{"command":/, /\.claude.*projects.*jsonl/i];
+  if (junkPatterns.some(p => p.test(content))) return;
+
   const db = ensureDb();
   try {
     db.prepare(
