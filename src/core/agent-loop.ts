@@ -1724,7 +1724,8 @@ export async function runSystem2Loop(
 
   // ── Layer 1: Response Cache ──
   // CRITICAL: Skip cache for action/personal messages — they need REAL tool execution
-  if (!options?.skipCache && !isActionMessage(userMessage) && !isPersonalQ) {
+  const isMoodMsg = /รู้สึก|เครียด|เหนื่อย|ดีใจ|เศร้า|ท้อ|มีความสุข|happy|sad|stressed|tired|mood|feeling/i.test(userMessage);
+  if (!options?.skipCache && !isActionMessage(userMessage) && !isPersonalQ && !isMoodMsg) {
     const cached = getCachedResponse(userMessage);
     if (cached) {
       options?.onProgress?.({ type: "cache_hit" });
@@ -1750,7 +1751,7 @@ export async function runSystem2Loop(
   // ── Layer 2: Knowledge-First Lookup ──
   // Skip for action messages — they need real tool execution, not static knowledge
   // Skip knowledge-first for personal questions ("ผมแพ้อะไร") — they need memory search
-  const knowledgeResult = (isActionMessage(userMessage) || isPersonalQ) ? null : await knowledgeFirstLookup(userMessage);
+  const knowledgeResult = (isActionMessage(userMessage) || isPersonalQ || isMoodMsg) ? null : await knowledgeFirstLookup(userMessage);
   if (knowledgeResult?.found) {
     options?.onProgress?.({ type: "knowledge_hit", source: knowledgeResult.source || "knowledge" });
     // Cache this for next time

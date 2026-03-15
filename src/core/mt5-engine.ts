@@ -111,7 +111,7 @@ function sendToBridge(method: string, params: Record<string, any> = {}): Promise
     const timeout = setTimeout(() => {
       pendingRequests.delete(id);
       reject(new Error(`MT5 bridge timeout for ${method}`));
-    }, 30000);
+    }, 15000);
 
     pendingRequests.set(id, { resolve, reject, timer: timeout });
 
