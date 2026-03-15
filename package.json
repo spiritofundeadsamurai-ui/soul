@@ -1,7 +1,7 @@
 {
   "name": "soul-ai",
-  "version": "2.0.0",
-  "description": "Soul — AI that remembers everything, thinks independently, and bonds with you. 211+ tools, 5 channels, vector memory, self-healing. Works with Ollama (free) or any LLM.",
+  "version": "2.0.1",
+  "description": "Soul — AI that remembers everything, thinks independently, and bonds with you. 236+ tools, 5 channels, vector memory, evolution loop, trading team. Works with Ollama (free) or any LLM.",
   "main": "dist/index.js",
   "bin": {
     "soul-ai": "dist/cli.js",

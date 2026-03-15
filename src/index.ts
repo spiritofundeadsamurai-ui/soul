@@ -70,7 +70,7 @@ async function main() {
   // Create MCP server
   const server = new McpServer({
     name: "soul",
-    version: "2.0.0",
+    version: "2.0.1",
   });
 
   // ─── MINIMAL TOOL SURFACE ───

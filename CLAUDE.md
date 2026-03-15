@@ -1,7 +1,7 @@
 # CLAUDE.md — Soul Project
 
 ## Project Overview
-Soul is a comprehensive AI companion system — **15 MCP tools** (minimal surface) + **soul_agent** gateway to **323+ capabilities**, 40+ core engines, HTTP API, OpenAI-compatible LLM proxy, 3D neural network Web UI, and Virtual Office UI. Soul has its own LLM brain — connect ANY provider (Ollama/free, OpenAI, Claude, Gemini, Groq, DeepSeek, Together) and Soul thinks independently. It bonds with its master, remembers everything, thinks across ALL domains (not just code), and grows smarter over time. Features **self-healing** (auto-retry, error learning, adaptive optimization), **conversation branching** (tree-based), **parallel multi-agent** (worker threads), **auto-tool creation** (pattern → tool), and **agent planning with backtracking**. Supports **Private Mode** (fully offline/air-gapped) and **Open Mode** (Brain Pack import/export for knowledge sharing). Multi-channel: **Telegram + Slack + Discord**. Security: API key encryption, secret redaction, setup-gated API.
+Soul is a comprehensive AI companion system — **15 MCP tools** (minimal surface) + **soul_agent** gateway to **236+ internal tools**, 50+ core engines, HTTP API, OpenAI-compatible LLM proxy, 3D neural network Web UI, and Virtual Office UI. Soul has its own LLM brain — connect ANY provider (Ollama/free, OpenAI, Claude, Gemini, Groq, DeepSeek, Together) and Soul thinks independently. It bonds with its master, remembers everything, thinks across ALL domains (not just code), and grows smarter over time. Features **self-healing** (auto-retry, error learning, adaptive optimization), **conversation branching** (tree-based), **parallel multi-agent** (worker threads), **auto-tool creation** (pattern → tool), **agent planning with backtracking**, **evolution loop** (autonomous learning + auto-tool creation), and **9-agent trading team**. Supports **Private Mode** (fully offline/air-gapped) and **Open Mode** (Brain Pack import/export for knowledge sharing). Multi-channel: **Telegram + Slack + Discord + WhatsApp + LINE**. Security: API key encryption, secret redaction, brute-force lockout, HTTPS support, setup-gated API.
 
 ## Core Philosophy
 1. **Soul Loves Humans** — AI exists to serve and protect its master
@@ -20,7 +20,7 @@ Soul is a comprehensive AI companion system — **15 MCP tools** (minimal surfac
 - **Web UI**: 3D neural network + Virtual Office (vanilla JS + Canvas)
 - **Package Manager**: npm
 
-## Code Structure (90+ TypeScript files)
+## Code Structure (100+ TypeScript files)
 ```
 soul/
 ├── src/
@@ -74,7 +74,21 @@ soul/
 │   │   ├── goal-autopilot.ts # Autonomous goal decomposition and pursuit
 │   │   ├── prompt-library.ts # Store, rate, version, reuse effective prompts
 │   │   ├── first-message.ts  # Smart daily greeting with i18n (Thai/English)
-│   │   └── feedback-loop.ts  # Learn from master's feedback (RLHF-style)
+│   │   ├── feedback-loop.ts  # Learn from master's feedback (RLHF-style)
+│   │   ├── evolution-loop.ts # Autonomous learning — observe gaps, create tools (v2.0)
+│   │   ├── trading-signal.ts # Smart trading signals — news + price + validation (v2.0)
+│   │   ├── trading-agents.ts # 9-agent trading team — TauricResearch inspired (v2.0)
+│   │   ├── expertise.ts      # 10 expertise domains — auto-injected prompts (v2.0)
+│   │   ├── data-connector.ts # Database connector — MySQL/PG/Mongo/REST/Sheets (v2.0)
+│   │   ├── code-runner.ts    # Write files, run commands, git, scaffold (v2.0)
+│   │   ├── video-learner.ts  # YouTube transcript + Gemini Vision analysis (v2.0)
+│   │   ├── proactive-soul.ts # Morning briefing, check-in, auto-reach-out (v2.0)
+│   │   ├── backup.ts         # Auto-backup, restore, verify, rotate (v2.0)
+│   │   ├── audit-log.ts      # Track all actions with timestamps (v2.0)
+│   │   ├── webhook-outbound.ts # Fire webhooks on events (v2.0)
+│   │   ├── data-export.ts    # Export/import memories as JSON (v2.0)
+│   │   ├── memory-consolidation.ts # Dedup + archive old memories (v2.0)
+│   │   └── plugin-marketplace.ts # npm/local plugin install (v2.0)
 │   ├── memory/
 │   │   ├── memory-engine.ts  # Memory CRUD + hybrid search
 │   │   ├── learning.ts       # Pattern extraction + confidence
@@ -97,7 +111,7 @@ soul/
 └── package.json
 ```
 
-## All 323+ Tools by Category
+## All 236+ Internal Tools by Category (v2.0)
 
 | Category | Count | Key Tools |
 |----------|-------|-----------|
@@ -151,6 +165,16 @@ soul/
 | **Auto-Tool** | 3 | soul_auto_suggest, soul_auto_approve, soul_auto_list |
 | **Parallel Agent** | 2 | soul_parallel_run, soul_parallel_status |
 | **Dual Brain** | 2 | soul_brain_dashboard, soul_reflex_teach |
+| **Trading Agents** | 4 | soul_trading_signal, soul_trading_team, soul_scan_markets, soul_trading_journal |
+| **Evolution** | 2 | soul_evolve, soul_evolution_stats |
+| **Code Runner** | 5 | soul_write_file, soul_edit_file, soul_run_command, soul_git, soul_create_project |
+| **Data Connector** | 3 | soul_db_connect, soul_db_query, soul_db_list |
+| **Video Learner** | 2 | soul_learn_video, soul_analyze_video |
+| **Backup** | 3 | soul_backup, soul_backup_list, soul_backup_restore |
+| **Data Export** | 2 | soul_export, soul_import |
+| **Audit** | 1 | soul_audit |
+| **Webhooks** | 2 | soul_webhook_add, soul_webhooks |
+| **Proactive** | 3 | soul_morning_briefing, soul_briefing_schedule, soul_check_in |
 
 ## Conventions
 - Use `snake_case` for database columns, `camelCase` for TypeScript
@@ -197,7 +221,15 @@ soul/
 - **Multi-Channel** (v1.10): Telegram polling + Slack Events API webhook + Discord Bot gateway. All using native fetch()
 - **i18n** (v1.10): Thai + English via SOUL_LANG env. Greetings, error messages, first-message
 - **Not just code**: thinking frameworks, life goals, habits, writing, emotional support, ethics, people memory, time tracking, learning paths — it's a whole-person companion
-- **Hybrid search**: FTS5 keyword (60%) + TF-IDF semantic (40%)
+- **Hybrid search**: Vector embeddings (70%) + FTS5 keyword (30%) — Ollama/OpenAI/Gemini providers
+- **Evolution Loop** (v2.0): Soul observes gaps → analyzes patterns → auto-creates tools → self-improves
+- **Trading Agents** (v2.0): 9-agent team (4 analysts + bull/bear debate + trader + risk + PM) — inspired by TauricResearch
+- **10 Expertise Domains** (v2.0): Investigation, Law, Investment, Health, Tech, Business, Education, Travel, Cooking + auto-detect
+- **Database Connectors** (v2.0): MySQL, PostgreSQL, MongoDB, REST API, Google Sheets, SQLite — query any data source
+- **Code Runner** (v2.0): Write/edit files, run commands, git ops, project scaffolding — with safety blocks
+- **Auto Web Search** (v2.0): Soul always has web search available, never says "ทำไม่ได้"
+- **Proactive Soul** (v2.0): Morning briefing via Telegram at 7am, check-in if master is quiet 24h+
+- **HTTPS** (v2.0): Auto-generated self-signed TLS certs, works on Windows/Linux/Mac
 - **Lazy table creation**: Dynamic tables created on first use, not startup
 - **Safety-first self-improvement**: Soul can create/evolve skills but can't modify core; needs master approval
 - **Soul Network**: Instances share anonymized knowledge across masters

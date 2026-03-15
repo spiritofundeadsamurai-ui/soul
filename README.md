@@ -1,6 +1,6 @@
 <p align="center">
   <img src="https://img.shields.io/npm/v/soul-ai?color=7c3aed&style=for-the-badge" alt="npm" />
-  <img src="https://img.shields.io/badge/tools-211+-purple?style=for-the-badge" alt="tools" />
+  <img src="https://img.shields.io/badge/tools-236+-purple?style=for-the-badge" alt="tools" />
   <img src="https://img.shields.io/badge/channels-5-blue?style=for-the-badge" alt="channels" />
   <img src="https://img.shields.io/badge/local--first-private-green?style=for-the-badge" alt="privacy" />
   <img src="https://img.shields.io/badge/license-MIT-blue?style=for-the-badge" alt="license" />
@@ -82,7 +82,7 @@ node dist/server.js    # Web UI at http://localhost:47779
 - **Memory consolidation** — Auto-dedup, archive old entries
 - **2000+ memories** searchable instantly
 
-### 211+ Tools Across Every Domain
+### 236+ Tools Across Every Domain
 
 | Category | Examples |
 |----------|---------|
@@ -98,6 +98,11 @@ node dist/server.js    # Web UI at http://localhost:47779
 | **Media** | Charts, diagrams, reports, presentations |
 | **Backup** | Auto-backup, restore, export/import |
 | **Plugins** | Install from npm, scaffold your own |
+| **Trading Team** | 9-agent analysis (analysts + debate + risk + PM) |
+| **Database** | MySQL, PostgreSQL, MongoDB, REST API, Sheets |
+| **Code Runner** | Write/edit files, run commands, git, scaffold |
+| **Video** | YouTube transcript + Gemini Vision analysis |
+| **Evolution** | Auto-learn from gaps, create tools autonomously |
 
 ### 5 Messaging Channels
 - **Telegram** — Full polling, bidirectional chat
@@ -209,6 +214,6 @@ npm test             # Run tests
 [MIT](LICENSE) — Use Soul however you want. Make it yours.
 
 <p align="center">
-  <strong>Soul AI v2.0.0</strong> — 211+ tools, 5 channels, vector memory, self-healing<br/>
+  <strong>Soul AI v2.0.0</strong> — 236+ tools, 5 channels, vector memory, evolution loop, trading team<br/>
   <em>AI that remembers. AI that learns. AI that's yours.</em>
 </p>
