@@ -356,10 +356,9 @@ export function validateAuthToken(token: string): boolean {
     if (!row) {
       // Backward compat: accept legacy static token (hash of passphrase)
       try {
-        const { getMasterPassphraseHash } = require("./master.js");
-        const hash = getMasterPassphraseHash();
-        if (hash) {
-          const legacyToken = createHash("sha256").update(hash).digest("hex");
+        const masterRow = db.prepare("SELECT passphrase_hash FROM masters LIMIT 1").get() as any;
+        if (masterRow?.passphrase_hash) {
+          const legacyToken = createHash("sha256").update(masterRow.passphrase_hash).digest("hex");
           if (token === legacyToken) return true;
         }
       } catch { /* ok */ }

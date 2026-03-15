@@ -249,7 +249,7 @@
     if (localStorage.getItem('soul_theme') === 'light') toggleTheme();
 
     // ─── Auth token management ───
-    let authToken = sessionStorage.getItem('soul_token') || '';
+    let authToken = localStorage.getItem('soul_token') || '';
 
     async function api(path) {
       try {
@@ -259,7 +259,7 @@
         if (r.status === 401 || r.status === 403) {
           // Token expired or invalid — clear and show login
           authToken = '';
-          sessionStorage.removeItem('soul_token');
+          localStorage.removeItem('soul_token');
           localStorage.removeItem('soul_token');
           showLogin();
           return null;
@@ -287,7 +287,7 @@
         const data = await r.json();
         if (data.token) {
           authToken = data.token;
-          sessionStorage.setItem('soul_token', authToken);
+          localStorage.setItem('soul_token', authToken);
           document.getElementById('loginOverlay').classList.add('hidden');
           document.getElementById('loginPass').value = '';
           errEl.textContent = '';
